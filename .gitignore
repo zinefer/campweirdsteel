@@ -1,0 +1,42 @@
+# Composer dependencies
+/vendor/
+
+# Environment files
+.env
+.env.*
+
+# IDE/editor files
+.vscode/
+.idea/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Cache, logs, sessions, temp
+/storage/cache/
+/storage/logs/
+/storage/sessions/
+/storage/tmp/
+
+# Uploaded assets
+/public/assets/avatars/
+
+# Node/npm files
+node_modules/
+npm-debug.log*
+
+# Build artifacts
+*.log
+*.tmp
+
+# Misc
+*.swp
+*.bak
+
+# Ignore coverage reports
+coverage/
+
+# Ignore user-specific files
+*.sublime-workspace
+*.sublime-project
