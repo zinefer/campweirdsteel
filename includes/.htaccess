@@ -1,0 +1,4 @@
+# Deny direct access to include files
+<Files "*.php">
+    Require all denied
+</Files>
