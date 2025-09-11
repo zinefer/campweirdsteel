@@ -3,6 +3,12 @@
  * Gallery Main Page
  */
 
+// Security headers
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('X-XSS-Protection: 1; mode=block');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+
 require_once '../../includes/gallery/auth.php';
 require_once '../../includes/header.php';
 require_once '../../includes/navigation.php';
@@ -46,21 +52,32 @@ renderNavigation('gallery');
                 <div class="upload-controls">
                     <div class="file-input-wrapper">
                         <input type="file" id="fileInput" class="file-input" 
-                               accept="image/*,video/*" multiple="false">
+                               accept="image/*,video/*" multiple>
                         <label for="fileInput" class="file-input-label">
-                            Choose File
+                            📷 Choose Files
                         </label>
                     </div>
-                    <div class="selected-file" id="selectedFileName">
-                        No file selected
+                    <div class="selected-files" id="selectedFiles">
+                        <!-- Selected files will appear here -->
                     </div>
                     <button id="uploadButton" class="upload-button" disabled>
-                        Upload
+                        Upload Selected
                     </button>
                 </div>
                 
                 <div class="upload-info">
-                    <small>Max 50MB • JPG, PNG, WebP, MP4, WebM</small>
+                    <small>Max 50MB per file • JPG, PNG, WebP, MP4, WebM</small>
+                </div>
+                
+                <!-- Upload Progress -->
+                <div class="upload-progress" id="uploadProgress" style="display: none;">
+                    <div class="progress-header">
+                        <span class="progress-text">Uploading...</span>
+                        <span class="progress-count" id="progressCount">0/0</span>
+                    </div>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar-fill" id="progressBarFill"></div>
+                    </div>
                 </div>
             </div>
 
@@ -115,6 +132,65 @@ renderNavigation('gallery');
         </main>
     </div>
 
+    <!-- Compression Guide Modal -->
+    <div class="compression-modal" id="compressionModal">
+        <div class="compression-modal-content">
+            <button class="compression-modal-close" id="compressionModalClose">&times;</button>
+            
+            <div class="compression-modal-header">
+                <span class="compression-modal-icon">🗜️</span>
+                <h3>File Too Large - Compression Help</h3>
+            </div>
+            
+            <div class="compression-section">
+                <h4>Your file is too large for upload</h4>
+                <p>The maximum file size is <strong>50MB</strong>. Here's how to compress your media:</p>
+            </div>
+            
+            <div class="compression-section" id="imageCompressionTips" style="display: none;">
+                <h4>📸 Image Compression Tips</h4>
+                <ul class="compression-tips">
+                    <li><strong>Reduce quality:</strong> Export at 80-90% quality instead of 100%</li>
+                    <li><strong>Resize dimensions:</strong> Consider 2048px width for web sharing</li>
+                    <li><strong>Use WebP:</strong> Modern format that's 25-30% smaller than JPEG</li>
+                    <li><strong>Strip metadata:</strong> Remove EXIF data to save space</li>
+                </ul>
+                
+                <div class="tool-links">
+                    <a href="https://squoosh.app/" target="_blank" class="tool-link">Squoosh (Web)</a>
+                    <a href="https://tinypng.com/" target="_blank" class="tool-link">TinyPNG</a>
+                    <a href="https://compressor.io/" target="_blank" class="tool-link">Compressor.io</a>
+                </div>
+            </div>
+            
+            <div class="compression-section" id="videoCompressionTips" style="display: none;">
+                <h4>🎥 Video Compression Tips</h4>
+                <ul class="compression-tips">
+                    <li><strong>Lower resolution:</strong> Try 1080p instead of 4K for web sharing</li>
+                    <li><strong>Reduce bitrate:</strong> Use 2-8 Mbps for good quality/size balance</li>
+                    <li><strong>Use H.264:</strong> Best compatibility and compression</li>
+                    <li><strong>Trim length:</strong> Share shorter clips or highlights</li>
+                    <li><strong>Remove audio:</strong> If not needed, audio tracks add significant size</li>
+                </ul>
+                
+                <div class="tool-links">
+                    <a href="https://www.media.io/video-compressor.html" target="_blank" class="tool-link">Media.io</a>
+                    <a href="https://handbrake.fr/" target="_blank" class="tool-link">HandBrake (Free)</a>
+                    <a href="https://clideo.com/compress-video" target="_blank" class="tool-link">Clideo</a>
+                </div>
+            </div>
+            
+            <div class="compression-section">
+                <h4>💡 Pro Tips</h4>
+                <ul class="compression-tips">
+                    <li><strong>Batch processing:</strong> Most tools can compress multiple files at once</li>
+                    <li><strong>Keep originals:</strong> Always save a backup of your original files</li>
+                    <li><strong>Preview first:</strong> Check quality before uploading</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
     <!-- Enhanced Modal for full-size viewing -->
     <div class="modal" id="galleryModal">
         <div class="modal-overlay"></div>
@@ -123,6 +199,9 @@ renderNavigation('gallery');
                 <div class="modal-info">
                     <span class="modal-filename" id="modalFilename"></span>
                     <span class="modal-metadata" id="modalMetadata"></span>
+                    <div class="slideshow-indicator" id="slideshowIndicator" style="display: none;">
+                        <span>📽️ Slideshow Active</span>
+                    </div>
                 </div>
                 <button class="modal-close" id="modalClose">&times;</button>
             </div>

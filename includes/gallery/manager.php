@@ -5,6 +5,10 @@
  */
 
 require_once 'config.php';
+require_once __DIR__ . '/../../vendor/autoload.php';
+
+use FFMpeg\FFMpeg;
+use FFMpeg\Coordinate\TimeCode;
 
 class GalleryManager {
     
@@ -29,7 +33,7 @@ class GalleryManager {
                     'originalName' => GalleryConfig::extractOriginalName($filename),
                     'userId' => GalleryConfig::extractUserId($filename),
                     'ordering' => GalleryConfig::extractOrdering($filename),
-                    'uploaderName' => self::getUserDisplayName(GalleryConfig::extractUserId($filename))
+                    'uploaderName' => htmlspecialchars(self::getUserDisplayName(GalleryConfig::extractUserId($filename)), ENT_QUOTES, 'UTF-8')
                 ];
             }
         }
@@ -106,6 +110,11 @@ class GalleryManager {
             throw new Exception('Upload error: ' . $uploadedFile['error']);
         }
         
+        // Validate file content matches extension
+        if (!self::validateFileContent($uploadedFile['tmp_name'], $uploadedFile['name'])) {
+            throw new Exception('File content does not match file type');
+        }
+        
         $yearPath = GalleryConfig::getYearPath($year);
         $safeFilename = GalleryConfig::generateSafeFilename($uploadedFile['name'], $userId);
         $destinationPath = $yearPath . DIRECTORY_SEPARATOR . $safeFilename;
@@ -118,6 +127,37 @@ class GalleryManager {
         chmod($destinationPath, 0644);
         
         return $safeFilename;
+    }
+    
+    /**
+     * Validate file content matches the expected file type
+     */
+    private static function validateFileContent($filePath, $originalName) {
+        $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+        
+        // Get MIME type from file content
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        $mimeType = finfo_file($finfo, $filePath);
+        finfo_close($finfo);
+        
+        // Define allowed MIME types for each extension
+        $allowedMimeTypes = [
+            'jpg' => ['image/jpeg'],
+            'jpeg' => ['image/jpeg'],
+            'png' => ['image/png'],
+            'webp' => ['image/webp'],
+            'gif' => ['image/gif'],
+            'mp4' => ['video/mp4'],
+            'webm' => ['video/webm'],
+            'mov' => ['video/quicktime'],
+            'avi' => ['video/x-msvideo', 'video/avi']
+        ];
+        
+        if (!isset($allowedMimeTypes[$ext])) {
+            return false;
+        }
+        
+        return in_array($mimeType, $allowedMimeTypes[$ext]);
     }
     
     /**
@@ -142,6 +182,27 @@ class GalleryManager {
         
         if (!rename($filePath, $deletedPath)) {
             throw new Exception('Failed to delete file');
+        }
+        
+        // Also delete the corresponding thumbnail/poster if it exists
+        $thumbsDir = $yearPath . DIRECTORY_SEPARATOR . 'thumbs';
+        
+        if (GalleryConfig::isImage($filename)) {
+            // For images, thumbnail has same filename
+            $thumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $filename;
+        } else {
+            // For videos, poster has .jpg extension
+            $posterFilename = pathinfo($filename, PATHINFO_FILENAME) . '.jpg';
+            $thumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $posterFilename;
+        }
+        
+        if (file_exists($thumbPath)) {
+            $deletedThumbFilename = GalleryConfig::DELETED_PREFIX . basename($thumbPath);
+            $deletedThumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $deletedThumbFilename;
+            if (!rename($thumbPath, $deletedThumbPath)) {
+                error_log("Warning: Failed to delete thumbnail/poster: {$thumbPath}");
+                // Don't fail the whole operation if thumbnail deletion fails
+            }
         }
         
         return true;
@@ -229,6 +290,30 @@ class GalleryManager {
             throw new Exception('Failed to reorder file');
         }
         
+        // Also rename the corresponding thumbnail/poster if it exists
+        $thumbsDir = $yearPath . DIRECTORY_SEPARATOR . 'thumbs';
+        
+        if (GalleryConfig::isImage($filename)) {
+            // For images, thumbnail has same filename
+            $oldThumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $filename;
+            $newThumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $newFilename;
+        } else {
+            // For videos, poster has .jpg extension
+            $oldPosterFilename = pathinfo($filename, PATHINFO_FILENAME) . '.jpg';
+            $newPosterFilename = pathinfo($newFilename, PATHINFO_FILENAME) . '.jpg';
+            $oldThumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $oldPosterFilename;
+            $newThumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $newPosterFilename;
+        }
+        
+        if (file_exists($oldThumbPath)) {
+            if (!rename($oldThumbPath, $newThumbPath)) {
+                error_log("Warning: Failed to rename thumbnail/poster from {$oldThumbPath} to {$newThumbPath}");
+                // Don't fail the whole operation if thumbnail rename fails
+            } else {
+                error_log("Successfully renamed thumbnail/poster: {$filename} -> {$newFilename}");
+            }
+        }
+        
         error_log("Successfully reordered file: {$filename} -> {$newFilename} at position {$newPosition}");
         
         return $newFilename;
@@ -238,11 +323,41 @@ class GalleryManager {
      * Serve a file (with authentication check)
      */
     public static function serveFile($year, $filename) {
+        // Validate inputs first
+        if (!is_numeric($year) || $year < 2000 || $year > 3000) {
+            throw new Exception('Invalid year');
+        }
+        
+        // Check if this is a thumbnail request
+        $isThumb = strpos($filename, 'thumbs/') === 0;
+        $actualFilename = $isThumb ? substr($filename, 7) : $filename; // Remove 'thumbs/' prefix
+        
+        // Strict filename validation - allow thumbs/ prefix but validate the actual filename
+        if ($isThumb) {
+            // For thumbnails, validate the actual filename after 'thumbs/'
+            if (!preg_match('/^[a-zA-Z0-9._-]+$/', $actualFilename)) {
+                throw new Exception('Invalid filename');
+            }
+            // Prevent path traversal in thumbnail path
+            if (strpos($actualFilename, '..') !== false || strpos($actualFilename, '/') !== false || strpos($actualFilename, '\\') !== false) {
+                throw new Exception('Invalid filename');
+            }
+        } else {
+            // For regular files, use strict validation (no slashes allowed)
+            if (!preg_match('/^[a-zA-Z0-9._-]+$/', $filename)) {
+                throw new Exception('Invalid filename');
+            }
+            // Prevent path traversal attempts
+            if (strpos($filename, '..') !== false || strpos($filename, '/') !== false || strpos($filename, '\\') !== false) {
+                throw new Exception('Invalid filename');
+            }
+        }
+        
         $yearPath = GalleryConfig::getYearPath($year);
         $filePath = $yearPath . DIRECTORY_SEPARATOR . $filename;
         
         // Security checks
-        if (strpos($filename, GalleryConfig::DELETED_PREFIX) === 0) {
+        if (strpos($actualFilename, GalleryConfig::DELETED_PREFIX) === 0) {
             throw new Exception('File not found');
         }
         
@@ -250,11 +365,30 @@ class GalleryManager {
             throw new Exception('File not found');
         }
         
-        // Additional security: ensure file is within year directory
-        $realPath = realpath($filePath);
-        $realYearPath = realpath($yearPath);
-        if (strpos($realPath, $realYearPath) !== 0) {
-            throw new Exception('Invalid file path');
+        // Ensure file is actually in the expected directory (canonical path check)
+        $canonicalFilePath = realpath($filePath);
+        $canonicalYearPath = realpath($yearPath);
+        
+        if ($canonicalFilePath === false || $canonicalYearPath === false) {
+            throw new Exception('File not found');
+        }
+        
+        // For thumbnails, check that the file is in the thumbs subdirectory
+        if ($isThumb) {
+            $thumbsPath = $canonicalYearPath . DIRECTORY_SEPARATOR . 'thumbs';
+            if (strpos($canonicalFilePath, $thumbsPath . DIRECTORY_SEPARATOR) !== 0) {
+                throw new Exception('Invalid file path');
+            }
+        } else {
+            // For regular files, ensure they're directly in the year directory
+            if (strpos($canonicalFilePath, $canonicalYearPath . DIRECTORY_SEPARATOR) !== 0) {
+                throw new Exception('Invalid file path');
+            }
+        }
+        
+        // Verify it's an allowed file type (check the actual filename, not the path)
+        if (!GalleryConfig::isAllowedFileType($actualFilename)) {
+            throw new Exception('File type not allowed');
         }
         
         return $filePath;
@@ -380,6 +514,64 @@ class GalleryManager {
         } catch (Exception $e) {
             error_log("Error getting user display name: " . $e->getMessage());
             return "User {$userId}";
+        }
+    }
+    
+    /**
+     * Generate poster image for videos (using php-ffmpeg library)
+     * Returns null if FFmpeg is not available or generation fails
+     */
+    public static function generateVideoPoster($year, $filename) {
+        $yearPath = GalleryConfig::getYearPath($year);
+        $filePath = $yearPath . DIRECTORY_SEPARATOR . $filename;
+        
+        if (GalleryConfig::isImage($filename) || !file_exists($filePath)) {
+            return null;
+        }
+        
+        $thumbsDir = $yearPath . DIRECTORY_SEPARATOR . 'thumbs';
+        if (!is_dir($thumbsDir)) {
+            mkdir($thumbsDir, 0755, true);
+        }
+        
+        // Create poster filename (change extension to .jpg)
+        $posterFilename = pathinfo($filename, PATHINFO_FILENAME) . '.jpg';
+        $posterPath = $thumbsDir . DIRECTORY_SEPARATOR . $posterFilename;
+        
+        // Return existing poster if it exists and is newer than original
+        if (file_exists($posterPath) && filemtime($posterPath) >= filemtime($filePath)) {
+            return "serve.php?year={$year}&file=thumbs/" . urlencode($posterFilename);
+        }
+        
+        try {
+            // Create FFMpeg instance with explicit binary paths
+            $ffmpeg = FFMpeg::create([
+                'ffmpeg.binaries'  => '/usr/bin/ffmpeg',
+                'ffprobe.binaries' => '/usr/bin/ffprobe',
+                'timeout'          => 60, // Reduced timeout for thumbnail generation
+                'ffmpeg.threads'   => 1,
+            ]);
+            
+            // Open video file
+            $video = $ffmpeg->open($filePath);
+            
+            // Extract frame at 1 second
+            $frame = $video->frame(TimeCode::fromSeconds(1));
+            
+            // Save the frame as JPEG
+            $frame->save($posterPath);
+            
+            // Verify the poster was created successfully
+            if (file_exists($posterPath) && filesize($posterPath) > 0) {
+                return "serve.php?year={$year}&file=thumbs/" . urlencode($posterFilename);
+            } else {
+                error_log("Generated poster file is empty or missing for {$filename}");
+                return null;
+            }
+            
+        } catch (Exception $e) {
+            error_log("Video poster generation error for {$filename}: " . $e->getMessage());
+            return null;
         }
     }
 }

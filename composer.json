@@ -39,6 +39,7 @@
         "flarum/subscriptions": "*",
         "flarum/suspend": "*",
         "flarum/tags": "*",
+        "fof/analytics": "*",
         "fof/links": "^1.3",
         "fof/nightmode": "*",
         "fof/oauth": "^1.7",
@@ -46,7 +47,8 @@
         "fof/polls": "*",
         "fof/upload": "*",
         "fof/user-bio": "*",
-        "fof/user-directory": "*"
+        "fof/user-directory": "*",
+        "php-ffmpeg/php-ffmpeg": "^1.3"
     },
     "config": {
         "preferred-install": "dist",

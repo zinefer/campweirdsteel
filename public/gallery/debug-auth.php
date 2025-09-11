@@ -2,9 +2,21 @@
 /**
  * Debug Authentication Script
  * Debug the simplified Laravel-style authentication
+ * SECURITY: Only accessible to authenticated users
  */
 
 require_once '../../includes/gallery/auth.php';
+
+// Require authentication first
+$auth = new GalleryAuth();
+$auth->requireAuth();
+
+// Additional check - only allow specific users or admins if needed
+$user = $auth->getUser();
+if (!$user || !isset($user->id)) {
+    http_response_code(403);
+    exit('Access denied');
+}
 
 header('Content-Type: application/json');
 

@@ -12,6 +12,18 @@
     min-height: 100vh;
     padding-top: 70px; /* Account for fixed nav */
     background: #0a0a0a;
+    position: relative;
+    overflow-x: hidden;
+}
+
+/* Ensure no modal content leaks into layout */
+.gallery-layout * {
+    /*position: relative;*/
+    z-index: 1;
+}
+
+.modal, .compression-modal {
+    z-index: 2000 !important;
 }
 
 /* Sidebar Styles */
@@ -96,6 +108,8 @@
 .file-input {
     position: absolute;
     left: -9999px;
+    opacity: 0;
+    pointer-events: none;
 }
 
 .file-input-label {
@@ -110,6 +124,9 @@
     transition: all 0.3s ease;
     font-size: 0.9rem;
     font-weight: 600;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
 }
 
 .file-input-label:hover {
@@ -117,14 +134,132 @@
     box-shadow: 0 5px 15px rgba(255, 107, 53, 0.3);
 }
 
-.selected-file {
-    padding: 8px 12px;
-    background: #333;
+.file-input-label:active {
+    transform: translateY(0);
+}
+
+.selected-files {
+    max-height: 200px;
+    overflow-y: auto;
     border-radius: 15px;
+    background: #333;
+    border: 1px solid #444;
+}
+
+.selected-files:empty::before {
+    content: 'No files selected';
+    display: block;
+    padding: 12px;
     color: #ccc;
     font-size: 0.85rem;
     text-align: center;
-    border: 1px solid #444;
+}
+
+.file-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid #444;
+    transition: background-color 0.2s ease;
+}
+
+.file-item:last-child {
+    border-bottom: none;
+}
+
+.file-item:hover {
+    background: #3a3a3a;
+}
+
+.file-item.error {
+    background: rgba(220, 53, 69, 0.1);
+    border-color: #dc3545;
+}
+
+.file-item.warning {
+    background: rgba(255, 193, 7, 0.1);
+    border-color: #ffc107;
+}
+
+.file-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.file-name {
+    font-size: 0.8rem;
+    color: #fff;
+    font-weight: 600;
+    margin-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-meta {
+    font-size: 0.7rem;
+    color: #ccc;
+    display: flex;
+    gap: 8px;
+}
+
+.file-status {
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.file-status.ready {
+    background: rgba(40, 167, 69, 0.2);
+    color: #28a745;
+}
+
+.file-status.error {
+    background: rgba(220, 53, 69, 0.2);
+    color: #dc3545;
+}
+
+.file-status.warning {
+    background: rgba(255, 193, 7, 0.2);
+    color: #ffc107;
+}
+
+.file-status.uploading {
+    background: rgba(0, 123, 255, 0.2);
+    color: #007bff;
+}
+
+.file-status.success {
+    background: rgba(40, 167, 69, 0.2);
+    color: #28a745;
+}
+
+.file-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.file-remove {
+    background: #dc3545;
+    border: none;
+    color: white;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 0.7rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+}
+
+.file-remove:hover {
+    background: #c82333;
+    transform: scale(1.1);
 }
 
 .upload-button {
@@ -137,6 +272,7 @@
     transition: all 0.3s ease;
     font-size: 0.9rem;
     font-weight: 600;
+    position: relative;
 }
 
 .upload-button:hover:not(:disabled) {
@@ -150,10 +286,56 @@
     background: #666;
 }
 
+.upload-button.uploading {
+    background: #007bff;
+    cursor: not-allowed;
+}
+
 .upload-info {
     text-align: center;
     color: #666;
     font-size: 0.8rem;
+}
+
+/* Upload Progress */
+.upload-progress {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: rgba(0, 123, 255, 0.1);
+    border: 1px solid #007bff;
+    border-radius: 15px;
+}
+
+.progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 0.85rem;
+}
+
+.progress-text {
+    color: #007bff;
+    font-weight: 600;
+}
+
+.progress-count {
+    color: #ccc;
+}
+
+.progress-bar-container {
+    height: 8px;
+    background: #333;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(45deg, #007bff, #0056b3);
+    width: 0%;
+    transition: width 0.3s ease;
+    border-radius: 10px;
 }
 
 /* Years List */
@@ -463,22 +645,63 @@
 
 .video-indicator {
     position: absolute;
-    top: 15px;
-    right: 15px;
-    background: rgba(0,0,0,0.8);
+    top: 10px;
+    right: 10px;
+    background: rgba(0, 0, 0, 0.8);
     color: white;
-    padding: 6px 12px;
-    border-radius: 20px;
-    font-size: 0.8rem;
-    display: flex;
-    align-items: center;
-    gap: 5px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
     backdrop-filter: blur(10px);
+    z-index: 10;
 }
 
 .video-indicator::before {
-    content: '▶';
-    font-size: 0.7rem;
+    content: "🎥 ";
+}
+
+/* Video placeholder styling */
+.video-placeholder {
+    cursor: pointer;
+    position: relative;
+}
+
+.video-placeholder::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 60px;
+    height: 60px;
+    background: rgba(255, 107, 53, 0.9);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    color: white;
+    z-index: 10;
+    pointer-events: none;
+    transition: all 0.3s ease;
+}
+
+.video-placeholder:hover::after {
+    background: rgba(255, 107, 53, 1);
+    transform: translate(-50%, -50%) scale(1.1);
+}
+
+/* Loading state for videos */
+.video-placeholder[style*="opacity: 0.5"]::after {
+    content: '';
+    background: rgba(255, 107, 53, 0.7);
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 0.7; }
+    50% { opacity: 1; }
 }
 
 /* Drag and Drop Styles */
@@ -814,6 +1037,8 @@
     transition: all 0.3s ease;
     font-size: 0.9rem;
     font-weight: 600;
+    position: relative;
+    overflow: hidden;
 }
 
 .modal-btn:hover {
@@ -821,9 +1046,200 @@
     box-shadow: 0 5px 15px rgba(255, 107, 53, 0.3);
 }
 
+.modal-btn.active {
+    background: linear-gradient(45deg, #2ecc71, #27ae60);
+    animation: modalPulse 2s infinite;
+}
+
+.modal-btn.active::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+    animation: slide 2s infinite;
+}
+
+@keyframes modalPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+}
+
+@keyframes slide {
+    0% { left: -100%; }
+    100% { left: 100%; }
+}
+
 .modal-counter {
     color: #ccc;
     font-size: 0.9rem;
+}
+
+.slideshow-indicator {
+    color: #2ecc71;
+    font-size: 0.85rem;
+    font-weight: 600;
+    animation: pulse 2s infinite;
+    margin-top: 4px;
+}
+
+.slideshow-indicator span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+/* Compression Guide Modal */
+.compression-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.9);
+    display: none !important;
+    z-index: 2500;
+    backdrop-filter: blur(10px);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+.compression-modal.show {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    opacity: 1;
+    visibility: visible;
+}
+
+.compression-modal-content {
+    background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
+    border: 2px solid #ff6b35;
+    border-radius: 20px;
+    padding: 2rem;
+    max-width: 500px;
+    max-height: 80vh;
+    overflow-y: auto;
+    position: relative;
+    margin: 1rem;
+}
+
+.compression-modal-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 1.5rem;
+    color: #ff6b35;
+}
+
+.compression-modal-header h3 {
+    margin: 0;
+    font-size: 1.4rem;
+    font-weight: 700;
+}
+
+.compression-modal-icon {
+    font-size: 1.6rem;
+}
+
+.compression-modal-close {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    background: none;
+    border: none;
+    color: #ccc;
+    font-size: 1.5rem;
+    cursor: pointer;
+    padding: 0.5rem;
+    border-radius: 50%;
+    transition: all 0.3s ease;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.compression-modal-close:hover {
+    background: rgba(255, 107, 53, 0.2);
+    color: #ff6b35;
+}
+
+.compression-section {
+    margin-bottom: 1.5rem;
+}
+
+.compression-section h4 {
+    color: #ff6b35;
+    margin-bottom: 0.5rem;
+    font-size: 1.1rem;
+}
+
+.compression-section p {
+    color: #ccc;
+    line-height: 1.5;
+    margin-bottom: 0.75rem;
+}
+
+.compression-tips {
+    list-style: none;
+    padding: 0;
+}
+
+.compression-tips li {
+    background: rgba(255, 107, 53, 0.1);
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    border-radius: 10px;
+    border-left: 3px solid #ff6b35;
+    color: #e0e0e0;
+    font-size: 0.9rem;
+}
+
+.compression-tips li strong {
+    color: #ff6b35;
+}
+
+.tool-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 1rem;
+}
+
+.tool-link {
+    display: inline-block;
+    padding: 6px 12px;
+    background: linear-gradient(45deg, #ff6b35, #f7931e);
+    color: white;
+    text-decoration: none;
+    border-radius: 15px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+.tool-link:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(255, 107, 53, 0.3);
+    color: white;
+    text-decoration: none;
+}
+
+.file-size-large {
+    color: #ffc107;
+    font-weight: 600;
+}
+
+.file-size-huge {
+    color: #dc3545;
+    font-weight: 600;
 }
 
 /* Notification System */
@@ -920,28 +1336,84 @@
         padding: 1rem;
     }
     
+    .modal-media img,
+    .modal-media video {
+        max-width: calc(100vw - 50px);
+        max-height: calc(100vh - 200px);
+    }
+    
     .modal-nav {
-        width: 50px;
-        height: 50px;
-        font-size: 1.4rem;
+        width: 60px;
+        height: 60px;
+        border-width: 3px;
+    }
+    
+    .modal-nav::before {
+        font-size: 2rem !important;
+        font-weight: 600;
     }
     
     .modal-prev {
-        left: 1rem;
+        left: 0.5rem;
     }
     
     .modal-next {
-        right: 1rem;
+        right: 0.5rem;
     }
     
-    /* Touch-friendly modal navigation on mobile */
-    @media (hover: none) and (pointer: coarse) {
-        .modal-nav {
-            width: 55px;
-            height: 55px;
-            font-size: 1.6rem;
-            background: rgba(0, 0, 0, 0.8);
-            border-width: 3px;
-        }
+    /* Better touch support for modal navigation */
+    .modal-nav {
+        background: rgba(0, 0, 0, 0.8);
+        border: 3px solid #ff6b35;
+        color: #ff6b35;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+    }
+    
+    .modal-nav:active {
+        background: rgba(255, 107, 53, 0.9);
+        transform: translateY(-50%) scale(0.9);
+    }
+    
+    /* Hide keyboard hints on mobile */
+    .modal-nav[data-key]::after {
+        display: none;
+    }
+    
+    /* Ensure compression modal is properly sized on mobile */
+    .compression-modal-content {
+        max-width: calc(100vw - 2rem);
+        max-height: calc(100vh - 2rem);
+        margin: 1rem;
+    }
+    
+    /* File selection improvements for mobile */
+    .file-input-label {
+        padding: 16px 24px;
+        font-size: 1rem;
+        min-height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+    }
+    
+    .selected-files {
+        max-height: 150px;
+    }
+    
+    .file-item {
+        padding: 12px;
+        min-height: 48px;
+        touch-action: manipulation;
+    }
+    
+    .upload-button {
+        padding: 16px 24px;
+        font-size: 1rem;
+        min-height: 48px;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
     }
 }

@@ -16,12 +16,23 @@ class GalleryConfig {
      * Get storage path for a specific year
      */
     public static function getYearPath($year) {
+        // Validate year input
+        if (!is_numeric($year) || $year < 2000 || $year > 3000) {
+            throw new Exception('Invalid year: ' . $year);
+        }
+        
         $basePath = realpath(dirname(__FILE__) . '/' . self::GALLERY_STORAGE_PATH);
+        if ($basePath === false) {
+            throw new Exception('Gallery storage path not found');
+        }
+        
         $yearPath = $basePath . DIRECTORY_SEPARATOR . $year;
         
         // Create directory if it doesn't exist
         if (!is_dir($yearPath)) {
-            mkdir($yearPath, 0755, true);
+            if (!mkdir($yearPath, 0755, true)) {
+                throw new Exception('Failed to create year directory');
+            }
         }
         
         return $yearPath;
@@ -79,14 +90,32 @@ class GalleryConfig {
      * Generate safe filename with fractional ordering
      */
     public static function generateSafeFilename($originalName, $userId) {
+        // Validate user ID
+        if (!is_numeric($userId) || $userId <= 0) {
+            throw new Exception('Invalid user ID');
+        }
+        
         // Sanitize original filename and truncate if needed
         $baseName = pathinfo($originalName, PATHINFO_FILENAME);
         $ext = pathinfo($originalName, PATHINFO_EXTENSION);
         
-        // Remove special characters and limit length
+        // More strict sanitization - only allow alphanumeric, dots, hyphens, underscores
         $safeName = preg_replace('/[^a-zA-Z0-9._-]/', '_', $baseName);
+        $safeName = preg_replace('/_{2,}/', '_', $safeName); // Replace multiple underscores with single
+        $safeName = trim($safeName, '_'); // Remove leading/trailing underscores
+        
         if (strlen($safeName) > self::MAX_FILENAME_LENGTH) {
             $safeName = substr($safeName, 0, self::MAX_FILENAME_LENGTH);
+        }
+        
+        if (empty($safeName)) {
+            $safeName = 'upload_' . time();
+        }
+        
+        // Validate extension
+        $ext = strtolower($ext);
+        if (!in_array($ext, array_merge(self::ALLOWED_IMAGE_TYPES, self::ALLOWED_VIDEO_TYPES))) {
+            throw new Exception('Invalid file extension');
         }
         
         // Generate fractional ordering position for current year

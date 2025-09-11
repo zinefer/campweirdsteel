@@ -11,6 +11,14 @@ function renderHeader($title = "Weird Steel - Burning Man Art Camp", $additional
     <?php foreach ($additionalCss as $css): ?>
         <link rel="stylesheet" href="<?php echo htmlspecialchars($css); ?>">
     <?php endforeach; ?>
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-39QVVSN7BT"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+
+        gtag('config', 'G-39QVVSN7BT');
+    </script>
 </head>
 <body>
     <!-- Animated particles -->

@@ -7,6 +7,12 @@
 require_once '../../includes/gallery/auth.php';
 require_once '../../includes/gallery/manager.php';
 
+// Security headers
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('X-XSS-Protection: 1; mode=block');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+
 // Require authentication
 $auth = new GalleryAuth();
 $auth->requireAuth();
@@ -18,6 +24,18 @@ $filename = isset($_GET['file']) ? $_GET['file'] : null;
 if (!$year || !$filename) {
     http_response_code(400);
     exit('Missing parameters');
+}
+
+// Additional security: validate filename format
+if (!preg_match('/^[a-zA-Z0-9._\/-]+$/', $filename)) {
+    http_response_code(400);
+    exit('Invalid filename');
+}
+
+// Additional input validation
+if ($year < 2000 || $year > 3000) {
+    http_response_code(400);
+    exit('Invalid year');
 }
 
 try {
@@ -32,6 +50,8 @@ try {
     header('Content-Length: ' . $filesize);
     header('Cache-Control: private, max-age=3600');
     header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: DENY');
+    header('Content-Security-Policy: default-src \'none\'; img-src \'self\'; media-src \'self\';');
     
     // Handle range requests for video
     if (strpos($mimeType, 'video/') === 0 && isset($_SERVER['HTTP_RANGE'])) {
