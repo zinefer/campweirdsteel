@@ -9,6 +9,12 @@ require_once __DIR__ . '/../../vendor/autoload.php';
 
 use FFMpeg\FFMpeg;
 use FFMpeg\Coordinate\TimeCode;
+use lsolesen\pel\PelJpeg;
+use lsolesen\pel\PelTiff;
+use lsolesen\pel\PelIfd;
+use lsolesen\pel\PelEntryShort;
+use lsolesen\pel\PelExif;
+use lsolesen\pel\PelTag;
 
 class GalleryManager {
     
@@ -441,6 +447,15 @@ class GalleryManager {
             
             if (!$source) return null;
             
+            // Get EXIF orientation for JPEG images
+            $orientation = 1; // Default orientation (no rotation)
+            if ($type == IMAGETYPE_JPEG && function_exists('exif_read_data')) {
+                $exif = @exif_read_data($filePath);
+                if ($exif !== false && isset($exif['Orientation'])) {
+                    $orientation = $exif['Orientation'];
+                }
+            }
+            
             // Calculate thumbnail dimensions
             $thumbSize = GalleryConfig::THUMBNAIL_SIZE;
             if ($width > $height) {
@@ -451,7 +466,7 @@ class GalleryManager {
                 $thumbWidth = ($width / $height) * $thumbSize;
             }
             
-            // Create thumbnail
+            // Create thumbnail from original image (without rotation)
             $thumb = imagecreatetruecolor($thumbWidth, $thumbHeight);
             
             // Preserve transparency for PNG
@@ -461,27 +476,117 @@ class GalleryManager {
             }
             
             imagecopyresampled($thumb, $source, 0, 0, 0, 0, $thumbWidth, $thumbHeight, $width, $height);
+            imagedestroy($source);
+            
+            // Save thumbnail to temporary location first to avoid race conditions
+            $tempThumbPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'thumb_' . uniqid() . '_' . basename($thumbPath);
             
             // Save thumbnail
             switch ($type) {
                 case IMAGETYPE_JPEG:
-                    imagejpeg($thumb, $thumbPath, 85);
+                    imagejpeg($thumb, $tempThumbPath, 85);
                     break;
                 case IMAGETYPE_PNG:
-                    imagepng($thumb, $thumbPath);
+                    imagepng($thumb, $tempThumbPath);
                     break;
                 case IMAGETYPE_WEBP:
-                    imagewebp($thumb, $thumbPath, 85);
+                    imagewebp($thumb, $tempThumbPath, 85);
                     break;
             }
             
-            imagedestroy($source);
             imagedestroy($thumb);
+            
+            // Copy EXIF orientation to thumbnail for JPEG files BEFORE moving to final location
+            if ($type == IMAGETYPE_JPEG && $orientation != 1) {
+                self::copyExifOrientationToThumbnail($filePath, $tempThumbPath);
+            }
+            
+            // Atomically move from temp to final location
+            if (!rename($tempThumbPath, $thumbPath)) {
+                // Clean up temp file if move failed
+                if (file_exists($tempThumbPath)) {
+                    unlink($tempThumbPath);
+                }
+                throw new Exception('Failed to save thumbnail');
+            }
             
             return "serve.php?year={$year}&file=thumbs/" . urlencode($filename);
         } catch (Exception $e) {
             error_log("Thumbnail generation error: " . $e->getMessage());
             return null;
+        }
+    }
+    
+    /**
+     * Copy EXIF orientation data from original image to thumbnail using PEL library
+     * This allows the browser to automatically rotate the thumbnail correctly
+     * 
+     * @param string $originalPath Path to the original image
+     * @param string $thumbPath Path to the thumbnail image
+     */
+    private static function copyExifOrientationToThumbnail($originalPath, $thumbPath) {
+        try {
+            // Read EXIF data from original image using PEL
+            $originalJpeg = new PelJpeg($originalPath);
+            $originalExif = $originalJpeg->getExif();
+            
+            if ($originalExif === null) {
+                return; // No EXIF data in original
+            }
+            
+            $originalTiff = $originalExif->getTiff();
+            if ($originalTiff === null) {
+                return; // No TIFF data
+            }
+            
+            $originalIfd0 = $originalTiff->getIfd();
+            if ($originalIfd0 === null) {
+                return; // No IFD data
+            }
+            
+            // Get orientation from original
+            $orientationEntry = $originalIfd0->getEntry(PelTag::ORIENTATION);
+            if ($orientationEntry === null) {
+                return; // No orientation data
+            }
+            
+            $orientation = $orientationEntry->getValue();
+            
+            // Only proceed if orientation is not the default (1)
+            if ($orientation == 1) {
+                return;
+            }
+            
+            // Read thumbnail JPEG and add EXIF orientation
+            $thumbJpeg = new PelJpeg($thumbPath);
+            
+            // Create new EXIF data for thumbnail if it doesn't exist
+            $thumbExif = $thumbJpeg->getExif();
+            if ($thumbExif === null) {
+                $thumbExif = new PelExif();
+                $thumbJpeg->setExif($thumbExif);
+            }
+            
+            $thumbTiff = $thumbExif->getTiff();
+            if ($thumbTiff === null) {
+                $thumbTiff = new PelTiff();
+                $thumbExif->setTiff($thumbTiff);
+            }
+            
+            $thumbIfd0 = $thumbTiff->getIfd();
+            if ($thumbIfd0 === null) {
+                $thumbIfd0 = new PelIfd(PelIfd::IFD0);
+                $thumbTiff->setIfd($thumbIfd0);
+            }
+            
+            // Set orientation in thumbnail
+            $thumbIfd0->addEntry(new PelEntryShort(PelTag::ORIENTATION, $orientation));
+            
+            // Save the modified thumbnail
+            $thumbJpeg->saveFile($thumbPath);
+            
+        } catch (Exception $e) {
+            error_log("Error copying EXIF orientation using PEL: " . $e->getMessage());
         }
     }
     

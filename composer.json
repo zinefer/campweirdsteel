@@ -22,6 +22,7 @@
     },
     "require": {
         "clarkwinkelmann/flarum-ext-emojionearea": "^1.1",
+        "fileeye/pel": "^0.12.0",
         "flarum/approval": "*",
         "flarum/bbcode": "*",
         "flarum/core": "^1.8",

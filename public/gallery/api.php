@@ -153,6 +153,28 @@ try {
             ]);
             break;
             
+        case 'regenerate_thumbnails':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                throw new Exception('POST required');
+            }
+            
+            $year = isset($_POST['year']) ? (int)$_POST['year'] : 0;
+            if (!$year || $year < 2000 || $year > 3000) {
+                throw new Exception('Invalid year');
+            }
+            
+            // Only allow admins or specific users to regenerate thumbnails
+            // For now, allow any authenticated user, but you might want to restrict this
+            
+            $results = GalleryManager::regenerateThumbnails($year);
+            
+            echo json_encode([
+                'success' => true,
+                'results' => $results,
+                'message' => "Regenerated thumbnails: {$results['succeeded']} succeeded, {$results['failed']} failed"
+            ]);
+            break;
+            
         default:
             throw new Exception('Invalid action');
     }
