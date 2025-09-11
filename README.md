@@ -1,40 +1,54 @@
-<p align="center">
-<a href="https://flarum.org/"><img src="https://flarum.org/assets/img/logo.png"></a>
-</p>
+# Camp Weird Steel
 
-<p align="center">
-<a href="https://packagist.org/packages/flarum/core"><img src="https://poser.pugx.org/flarum/core/d/total.svg" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/flarum/core"><img src="https://poser.pugx.org/flarum/core/v/stable.svg" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/flarum/core"><img src="https://poser.pugx.org/flarum/core/license.svg" alt="License"></a>
-</p>
+Camp Weird Steel is a Burning Man art camp project, featuring a custom gallery, interactive web features, and Flarum forum integration. This repository contains the source code and assets for the camp's website and gallery system.
 
-## About Flarum
+## Features
+- Custom PHP-based website and gallery
+- Flarum forum integration
+- Responsive design with CSS and JavaScript assets
+- Google Analytics integration
+- Modular includes for easy site updates
+- Gallery authentication and management
 
-**[Flarum](https://flarum.org/) is a delightfully simple discussion platform for your website.** It's fast and easy to use, with all the features you need to run a successful community. It is designed to be:
+## Project Structure
+```
+includes/         # PHP includes for site sections (header, footer, navigation, gallery, etc.)
+public/           # Public web assets (CSS, JS, images, gallery, forum)
+storage/          # Cache, logs, sessions, views, and other storage
+vendor/           # Composer dependencies
+CHANGELOG.md      # Project changelog
+composer.json     # Composer configuration
+README.md         # Project documentation
+site.php          # Main site entry point
+```
 
-* **Fast and simple.** No clutter, no bloat, no complex dependencies. Flarum is built with PHP so it’s quick and easy to deploy. The interface is powered by Mithril, a performant JavaScript framework with a tiny footprint.
+## Getting Started
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/zinefer/campweirdsteel.git
+   ```
+2. **Install dependencies:**
+   ```bash
+   composer install
+   ```
+3. **Configure the site:**
+   - Update configuration files in `includes/` and `public/gallery/` as needed.
+   - Set up your web server to serve the `public/` directory.
 
-* **Beautiful and responsive.** This is forum software for humans. Flarum is carefully designed to be consistent and intuitive across platforms, out-of-the-box.
+## Gallery System
+- Authentication and management handled via `includes/gallery/`
+- Public gallery interface in `public/gallery/`
 
-* **Powerful and extensible.** Customize, extend, and integrate Flarum to suit your community. Flarum’s architecture is amazingly flexible, with a powerful Extension API.
-
-![screenshot](https://flarum.org/assets/img/home-screenshot.png)
-
-## Installation
-
-Read the **[Installation guide](https://docs.flarum.org/install)** to get started. For support, refer to the [documentation](https://docs.flarum.org/), and ask questions on the [community forum](https://discuss.flarum.org/) or [Discord chat](https://flarum.org/discord/).
+## Forum Integration
+- Flarum forum located in `public/forum/`
+- Extend or customize via `extend.php` and Flarum extensions in `vendor/flarum/`
 
 ## Contributing
-
-Thank you for considering contributing to Flarum! Please read the **[Contributing guide](https://docs.flarum.org/contributing)** to learn how you can help.
-
-This repository only holds the Flarum skeleton application. Most development happens in [flarum/core](https://github.com/flarum/core).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Flarum, please follow our [security policy](https://github.com/flarum/core/security/policy) so we can address it promptly.
+Pull requests and issues are welcome! Please review the [CHANGELOG.md](CHANGELOG.md) and [LICENSE](LICENSE) before contributing.
 
 ## License
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 
-Flarum is open-source software licensed under the [MIT License](https://github.com/flarum/flarum/blob/master/LICENSE).
+## Contact
+For questions or collaboration, reach out via the contact form on the website or open an issue on GitHub.
 
