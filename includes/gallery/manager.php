@@ -154,6 +154,16 @@ class GalleryManager {
         // Set proper permissions
         chmod($destinationPath, 0644);
         
+        // Generate thumbnail immediately for images
+        if (GalleryConfig::isImage($safeFilename)) {
+            try {
+                self::generateThumbnail($year, $safeFilename);
+            } catch (Exception $e) {
+                // Log thumbnail generation error but don't fail the upload
+                error_log("Failed to generate thumbnail for {$safeFilename}: " . $e->getMessage());
+            }
+        }
+        
         return $safeFilename;
     }
     
@@ -787,6 +797,71 @@ class GalleryManager {
             error_log("Video poster generation error for {$filename}: " . $e->getMessage());
             return null;
         }
+    }
+    
+    /**
+     * Regenerate all thumbnails for a specific year
+     * Returns array with results
+     */
+    public static function regenerateThumbnails($year) {
+        $yearPath = GalleryConfig::getYearPath($year);
+        $thumbsDir = $yearPath . DIRECTORY_SEPARATOR . 'thumbs';
+        
+        // Create thumbs directory if it doesn't exist
+        if (!is_dir($thumbsDir)) {
+            mkdir($thumbsDir, 0755, true);
+        }
+        
+        $results = [
+            'processed' => 0,
+            'succeeded' => 0,
+            'failed' => 0,
+            'errors' => []
+        ];
+        
+        // Start time tracking to prevent timeouts
+        $startTime = time();
+        $maxExecutionTime = 25; // Leave 5 seconds buffer before 30-second timeout
+        
+        // Get all image files for the year
+        $allFiles = GalleryConfig::getOrderedFiles($year);
+        $imageFiles = array_filter($allFiles, function($filename) {
+            return GalleryConfig::isImage($filename);
+        });
+        
+        foreach ($imageFiles as $filename) {
+            // Check execution time to prevent timeout
+            if (time() - $startTime > $maxExecutionTime) {
+                $results['errors'][] = "Stopped early to prevent timeout. Process remaining files manually.";
+                break;
+            }
+            
+            $results['processed']++;
+            
+            try {
+                // Delete existing thumbnail if it exists
+                $thumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $filename;
+                if (file_exists($thumbPath)) {
+                    unlink($thumbPath);
+                }
+                
+                // Generate new thumbnail
+                $thumbnailUrl = self::generateThumbnail($year, $filename);
+                
+                if ($thumbnailUrl) {
+                    $results['succeeded']++;
+                } else {
+                    $results['failed']++;
+                    $results['errors'][] = "Failed to generate thumbnail for: {$filename}";
+                }
+                
+            } catch (Exception $e) {
+                $results['failed']++;
+                $results['errors'][] = "Error processing {$filename}: " . $e->getMessage();
+            }
+        }
+        
+        return $results;
     }
 }
 ?>

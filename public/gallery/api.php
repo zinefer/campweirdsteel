@@ -35,10 +35,17 @@ try {
             
             $files = GalleryManager::getFiles($year);
             
-            // Add thumbnails/posters and enhanced metadata for all media types
+            // Add thumbnail/poster URLs and enhanced metadata for all media types
             foreach ($files as &$file) {
                 if ($file['type'] === 'image') {
-                    $file['thumbnail'] = GalleryManager::generateThumbnail($year, $file['filename']);
+                    // Check if thumbnail exists, if not set to null
+                    $yearPath = GalleryConfig::getYearPath($year);
+                    $thumbPath = $yearPath . DIRECTORY_SEPARATOR . "thumbs" . DIRECTORY_SEPARATOR . $file['filename'];
+                    if (file_exists($thumbPath)) {
+                        $file['thumbnail'] = "serve.php?year={$year}&file=thumbs/" . urlencode($file['filename']);
+                    } else {
+                        $file['thumbnail'] = null;
+                    }
                     
                     // Try to extract EXIF data for better metadata
                     $exifData = GalleryManager::getImageMetadata($year, $file['filename']);
@@ -151,6 +158,35 @@ try {
                 'newFilename' => $newFilename,
                 'message' => 'File reordered successfully'
             ]);
+            break;
+            
+        case 'generate_thumbnail':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                throw new Exception('POST required');
+            }
+            
+            $year = isset($_POST['year']) ? (int)$_POST['year'] : 0;
+            $filename = isset($_POST['filename']) ? trim($_POST['filename']) : '';
+            
+            if (!$year || $year < 2000 || $year > 3000) {
+                throw new Exception('Invalid year');
+            }
+            
+            if (!$filename || !preg_match('/^[a-zA-Z0-9._-]+$/', $filename)) {
+                throw new Exception('Invalid filename');
+            }
+            
+            $thumbnailUrl = GalleryManager::generateThumbnail($year, $filename);
+            
+            if ($thumbnailUrl) {
+                echo json_encode([
+                    'success' => true,
+                    'thumbnail' => $thumbnailUrl,
+                    'message' => 'Thumbnail generated successfully'
+                ]);
+            } else {
+                throw new Exception('Failed to generate thumbnail');
+            }
             break;
             
         case 'regenerate_thumbnails':

@@ -416,11 +416,14 @@ class Gallery {
         // Apply sorting
         const sortedFiles = this.sortFiles([...this.files]);
         
-        grid.innerHTML = sortedFiles.map((file, index) => `
+        grid.innerHTML = sortedFiles.map((file, index) => {
+            // Find original index by filename to avoid issues with object references after sorting
+            const originalIndex = this.files.findIndex(f => f.filename === file.filename);
+            return `
             <div class="gallery-item ${this.sortMode === 'custom' ? 'draggable' : ''}" 
                  data-filename="${this.escapeHtml(file.filename)}" 
                  data-index="${index}"
-                 data-original-index="${this.files.indexOf(file)}"
+                 data-original-index="${originalIndex}"
                  ${this.sortMode === 'custom' ? 'draggable="true"' : ''}>
                 <div class="gallery-item-content">
                     ${this.renderFileContent(file)}
@@ -446,7 +449,8 @@ class Gallery {
                     </div>
                 </div>
             </div>
-        `).join('');
+        `;
+        }).join('');
         
         // Setup drag and drop for custom ordering
         if (this.sortMode === 'custom') {
@@ -1610,8 +1614,8 @@ class Gallery {
         }
         
         const file = this.files[fromIndex];
-        if (!file || !this.canDeleteFile(file)) {
-            this.showNotification('You can only reorder your own files', 'error');
+        if (!file) {
+            this.showNotification('File not found', 'error');
             return;
         }
         
