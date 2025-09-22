@@ -236,10 +236,30 @@ class GalleryConfig {
             return 'Z';
         }
         if (strlen($ordering) === 1) {
-            return chr(ord($ordering) - 1);
+            $charCode = ord($ordering);
+            // If we're at the beginning of lowercase letters, use uppercase Z
+            if ($charCode <= ord('a')) {
+                return 'Z';
+            }
+            return chr($charCode - 1);
         }
-        // For multi-character strings, append 'a' to the beginning
-        return substr($ordering, 0, -1) . chr(ord(substr($ordering, -1)) - 1) . 'z';
+        // For multi-character strings
+        $lastChar = substr($ordering, -1);
+        $lastCharCode = ord($lastChar);
+        
+        // If last character is 'a', we need to handle it differently
+        if ($lastCharCode <= ord('a')) {
+            // Remove the last character and try to decrement the previous one
+            $prefix = substr($ordering, 0, -1);
+            if (strlen($prefix) > 0) {
+                return self::generateOrderingBefore($prefix) . 'z';
+            } else {
+                // If we can't go further back, use uppercase
+                return 'Z' . substr($ordering, 1);
+            }
+        }
+        
+        return substr($ordering, 0, -1) . chr($lastCharCode - 1) . 'z';
     }
     
     /**
@@ -250,10 +270,28 @@ class GalleryConfig {
             return 'za';
         }
         if (strlen($ordering) === 1) {
-            return chr(ord($ordering) + 1);
+            $charCode = ord($ordering);
+            // If we're at the end of lowercase letters, append 'a'
+            if ($charCode >= ord('z')) {
+                return $ordering . 'a';
+            }
+            // If we're at the end of uppercase letters, wrap to lowercase
+            if ($charCode >= ord('Z')) {
+                return 'a';
+            }
+            return chr($charCode + 1);
         }
         // For multi-character strings
-        return substr($ordering, 0, -1) . chr(ord(substr($ordering, -1)) + 1);
+        $lastChar = substr($ordering, -1);
+        $lastCharCode = ord($lastChar);
+        
+        // If last character is 'z', we need to handle it differently
+        if ($lastCharCode >= ord('z')) {
+            // Append 'a' to create next ordering
+            return $ordering . 'a';
+        }
+        
+        return substr($ordering, 0, -1) . chr($lastCharCode + 1);
     }
     
     /**
@@ -265,18 +303,27 @@ class GalleryConfig {
         $afterChars = str_split($after);
         
         $result = '';
-        $carry = 0;
         
         for ($i = 0; $i < max(strlen($before), strlen($after)); $i++) {
-            $beforeChar = isset($beforeChars[$i]) ? ord($beforeChars[$i]) : ord('a') - 1;
-            $afterChar = isset($afterChars[$i]) ? ord($afterChars[$i]) : ord('z') + 1;
+            // Use valid character bounds - 'a' to 'z' range
+            $beforeChar = isset($beforeChars[$i]) ? ord($beforeChars[$i]) : ord('a');
+            $afterChar = isset($afterChars[$i]) ? ord($afterChars[$i]) : ord('z');
+            
+            // Ensure we stay within valid character range
+            $beforeChar = max(ord('A'), min(ord('z'), $beforeChar));
+            $afterChar = max(ord('A'), min(ord('z'), $afterChar));
             
             $mid = intval(($beforeChar + $afterChar) / 2);
             
-            if ($mid > $beforeChar) {
+            if ($mid > $beforeChar && $mid < $afterChar) {
                 $result .= chr($mid);
                 break;
+            } else if ($beforeChar < $afterChar - 1) {
+                // There's space between characters, use the next available
+                $result .= chr($beforeChar + 1);
+                break;
             } else {
+                // Characters are adjacent, continue to next position
                 $result .= chr($beforeChar);
             }
         }
