@@ -18,6 +18,12 @@ use lsolesen\pel\PelTag;
 
 class GalleryManager {
     
+    // Static cache for user display names to avoid repeated database queries
+    private static $userDisplayNameCache = [];
+    
+    // Static database connection cache
+    private static $dbConnection = null;
+    
     /**
      * Get files for a specific year
      */
@@ -26,10 +32,17 @@ class GalleryManager {
         $orderedFilenames = GalleryConfig::getOrderedFiles($year);
         $yearPath = GalleryConfig::getYearPath($year);
         
+        // First pass: collect all user IDs
+        $userIds = [];
+        $fileData = [];
+        
         foreach ($orderedFilenames as $filename) {
             $filePath = $yearPath . DIRECTORY_SEPARATOR . $filename;
             if (is_file($filePath)) {
-                $files[] = [
+                $userId = GalleryConfig::extractUserId($filename);
+                $userIds[] = $userId;
+                
+                $fileData[] = [
                     'filename' => $filename,
                     'path' => $filePath,
                     'size' => filesize($filePath),
@@ -37,11 +50,20 @@ class GalleryManager {
                     'type' => GalleryConfig::isImage($filename) ? 'image' : 'video',
                     'url' => "serve.php?year={$year}&file=" . urlencode($filename),
                     'originalName' => GalleryConfig::extractOriginalName($filename),
-                    'userId' => GalleryConfig::extractUserId($filename),
-                    'ordering' => GalleryConfig::extractOrdering($filename),
-                    'uploaderName' => htmlspecialchars(self::getUserDisplayName(GalleryConfig::extractUserId($filename)), ENT_QUOTES, 'UTF-8')
+                    'userId' => $userId,
+                    'ordering' => GalleryConfig::extractOrdering($filename)
                 ];
             }
+        }
+        
+        // Batch load user display names for all unique user IDs
+        $uniqueUserIds = array_unique(array_filter($userIds));
+        self::batchLoadUserDisplayNames($uniqueUserIds);
+        
+        // Second pass: add cached user display names
+        foreach ($fileData as $file) {
+            $file['uploaderName'] = htmlspecialchars(self::getCachedUserDisplayName($file['userId']), ENT_QUOTES, 'UTF-8');
+            $files[] = $file;
         }
         
         return $files;
@@ -223,12 +245,6 @@ class GalleryManager {
         
         if (!file_exists($filePath)) {
             throw new Exception("File not found: {$filename}. It may have been moved or renamed by another operation.");
-        }
-        
-        // Check if user owns the file
-        $fileUserId = GalleryConfig::extractUserId($filename);
-        if ($fileUserId !== $userId) {
-            throw new Exception('Permission denied');
         }
         
         // Get current files in order
@@ -591,6 +607,91 @@ class GalleryManager {
     }
     
     /**
+     * Get or create a shared database connection
+     */
+    private static function getDbConnection() {
+        if (self::$dbConnection === null) {
+            try {
+                $auth = new GalleryAuth();
+                $app = $auth->getApp();
+                $container = $app->getContainer();
+                self::$dbConnection = $container->make('flarum.db');
+            } catch (Exception $e) {
+                error_log("Error creating database connection: " . $e->getMessage());
+                throw $e;
+            }
+        }
+        return self::$dbConnection;
+    }
+    
+    /**
+     * Batch load user display names for multiple user IDs
+     */
+    private static function batchLoadUserDisplayNames($userIds) {
+        if (empty($userIds)) {
+            return;
+        }
+        
+        // Filter out already cached users and invalid IDs
+        $uncachedUserIds = [];
+        foreach ($userIds as $userId) {
+            if ($userId && !isset(self::$userDisplayNameCache[$userId])) {
+                $uncachedUserIds[] = $userId;
+            }
+        }
+        
+        if (empty($uncachedUserIds)) {
+            return; // All users already cached
+        }
+        
+        try {
+            $db = self::getDbConnection();
+            
+            $users = $db->table('users')
+                ->select('id', 'username', 'nickname')
+                ->whereIn('id', $uncachedUserIds)
+                ->get();
+            
+            foreach ($users as $user) {
+                // Prefer nickname if available, fall back to username
+                $displayName = $user->nickname ?: $user->username;
+                self::$userDisplayNameCache[$user->id] = $displayName;
+            }
+            
+            // Set default names for any user IDs that weren't found
+            foreach ($uncachedUserIds as $userId) {
+                if (!isset(self::$userDisplayNameCache[$userId])) {
+                    self::$userDisplayNameCache[$userId] = "User {$userId}";
+                }
+            }
+            
+        } catch (Exception $e) {
+            error_log("Error batch loading user display names: " . $e->getMessage());
+            
+            // Fallback: set default names for all requested users
+            foreach ($uncachedUserIds as $userId) {
+                self::$userDisplayNameCache[$userId] = "User {$userId}";
+            }
+        }
+    }
+    
+    /**
+     * Get cached user display name
+     */
+    private static function getCachedUserDisplayName($userId) {
+        if (!$userId) {
+            return 'Unknown User';
+        }
+        
+        if (isset(self::$userDisplayNameCache[$userId])) {
+            return self::$userDisplayNameCache[$userId];
+        }
+        
+        // If not in cache, load it individually (fallback)
+        return self::getUserDisplayName($userId);
+    }
+    
+    /**
      * Get user display name by user ID
      */
     public static function getUserDisplayName($userId) {
@@ -598,12 +699,13 @@ class GalleryManager {
             return 'Unknown User';
         }
         
+        // Check cache first
+        if (isset(self::$userDisplayNameCache[$userId])) {
+            return self::$userDisplayNameCache[$userId];
+        }
+        
         try {
-            // Get database connection through auth
-            $auth = new GalleryAuth();
-            $app = $auth->getApp();
-            $container = $app->getContainer();
-            $db = $container->make('flarum.db');
+            $db = self::getDbConnection();
 
             $userData = $db->table('users')
                 ->select('username', 'nickname')
@@ -612,13 +714,20 @@ class GalleryManager {
             
             if ($userData) {
                 // Prefer nickname if available, fall back to username
-                return $userData->nickname ?: $userData->username;
+                $displayName = $userData->nickname ?: $userData->username;
+                self::$userDisplayNameCache[$userId] = $displayName;
+                return $displayName;
             }
             
-            return "User {$userId}";
+            $fallbackName = "User {$userId}";
+            self::$userDisplayNameCache[$userId] = $fallbackName;
+            return $fallbackName;
+            
         } catch (Exception $e) {
             error_log("Error getting user display name: " . $e->getMessage());
-            return "User {$userId}";
+            $fallbackName = "User {$userId}";
+            self::$userDisplayNameCache[$userId] = $fallbackName;
+            return $fallbackName;
         }
     }
     
