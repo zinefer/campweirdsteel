@@ -50,6 +50,14 @@ renderNavigation('gallery');
             <div class="sidebar-section upload-section">
                 <h3 class="section-title">Upload Media</h3>
                 <div class="upload-controls">
+                    <!-- Upload on behalf dropdown (admin only) -->
+                    <div class="upload-on-behalf" id="uploadOnBehalfContainer" style="display: none;">
+                        <label for="uploadOnBehalfSelect" class="upload-behalf-label">Upload on behalf of:</label>
+                        <select id="uploadOnBehalfSelect" class="upload-behalf-select">
+                            <option value="">Loading users...</option>
+                        </select>
+                    </div>
+                    
                     <div class="file-input-wrapper">
                         <input type="file" id="fileInput" class="file-input" 
                                accept="image/*,video/*" multiple>
@@ -239,9 +247,10 @@ renderNavigation('gallery');
     <div class="notification-container" id="notificationContainer"></div>
 
     <script>
-        // Pass current user ID to JavaScript
+        // Pass current user ID and admin status to JavaScript
         window.GALLERY_CONFIG = {
-            currentUserId: <?php echo json_encode($user->id); ?>
+            currentUserId: <?php echo json_encode($user->id); ?>,
+            isAdmin: <?php echo json_encode($auth->isAdmin()); ?>
         };
     </script>
     <script src="../assets/js/main.js"></script>

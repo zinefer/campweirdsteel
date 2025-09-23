@@ -17,6 +17,8 @@ class GalleryAuth {
     private $app;
     private $user = null;
     private $cookieFactory = null;
+    private $dbConnection = null; // Cache the DB connection
+    private $isAdminCached = null; // Cache admin status
     
     public function __construct() {
         // Load Flarum site configuration and boot app
@@ -26,6 +28,9 @@ class GalleryAuth {
         // Get cookie factory for proper cookie name resolution
         $container = $this->app->getContainer();
         $this->cookieFactory = $container->make(CookieFactory::class);
+        
+        // Get and cache the database connection
+        $this->dbConnection = $container->make('flarum.db');
     }
     
     /**
@@ -61,10 +66,7 @@ class GalleryAuth {
             }
             
             // Look up the token in Flarum's database
-            $container = $this->app->getContainer();
-            $db = $container->make('flarum.db');
-            
-            $tokenData = $db->table('access_tokens')
+            $tokenData = $this->dbConnection->table('access_tokens')
                 ->where('token', $accessToken)
                 ->first();
             
@@ -74,7 +76,7 @@ class GalleryAuth {
             }
             
             // Get the user from Flarum's database
-            $userData = $db->table('users')
+            $userData = $this->dbConnection->table('users')
                 ->where('id', $tokenData->user_id)
                 ->first();
             
@@ -293,6 +295,57 @@ class GalleryAuth {
     public function canUploadForYear($year) {
         $currentYear = (int)date('Y');
         return $year == $currentYear;
+    }
+    
+    /**
+     * Check if the current user is an administrator
+     */
+    public function isAdmin() {
+        if ($this->isAdminCached !== null) {
+            return $this->isAdminCached; // Return cached result
+        }
+        
+        if (!$this->isAuthenticated() || !$this->user || !isset($this->user->id)) {
+            $this->isAdminCached = false;
+            return false;
+        }
+        
+        try {
+            // Check if user is in administrator group (usually group ID 1 in Flarum)
+            $adminGroupMembership = $this->dbConnection->table('group_user')
+                ->where('user_id', $this->user->id)
+                ->where('group_id', 1) // Administrator group
+                ->first();
+            
+            $this->isAdminCached = ($adminGroupMembership !== null);
+            return $this->isAdminCached;
+            
+        } catch (Exception $e) {
+            error_log("Error checking admin status: " . $e->getMessage());
+            $this->isAdminCached = false;
+            return false;
+        }
+    }
+    
+    /**
+     * Get the shared database connection
+     */
+    public function getDbConnection() {
+        return $this->dbConnection;
+    }
+    
+    /**
+     * Validate that a user exists by ID
+     */
+    public function validateUser($userId) {
+        try {
+            return $this->dbConnection->table('users')
+                ->where('id', $userId)
+                ->first();
+        } catch (Exception $e) {
+            error_log("Error validating user: " . $e->getMessage());
+            return null;
+        }
     }
     
     /**

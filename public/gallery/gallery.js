@@ -239,6 +239,8 @@ class Gallery {
         this.selectedFile = null;
         this.currentFileIndex = 0;
         this.currentUserId = window.GALLERY_CONFIG?.currentUserId || 0;
+        this.isAdmin = window.GALLERY_CONFIG?.isAdmin || false;
+        this.users = []; // For admin upload on behalf functionality
         this.isReordering = false; // Prevent concurrent reorder operations
         
         // Upload queue management
@@ -262,6 +264,12 @@ class Gallery {
         await this.loadYears();
         await this.loadFiles(this.currentYear);
         this.setupEventListeners();
+        
+        // Load users for admin upload on behalf functionality
+        if (this.isAdmin) {
+            await this.loadUsers();
+            this.setupUploadOnBehalf();
+        }
     }
     
     async loadYears() {
@@ -277,6 +285,57 @@ class Gallery {
         } catch (error) {
             this.showNotification('Failed to load years: ' + error.message, 'error');
         }
+    }
+    
+    async loadUsers() {
+        try {
+            const response = await fetch('api.php?action=users');
+            const data = await response.json();
+            
+            if (data.error) {
+                throw new Error(data.error);
+            }
+            
+            this.users = data.users || [];
+        } catch (error) {
+            console.error('Failed to load users:', error.message);
+            this.users = [];
+        }
+    }
+    
+    setupUploadOnBehalf() {
+        const container = document.getElementById('uploadOnBehalfContainer');
+        const select = document.getElementById('uploadOnBehalfSelect');
+        
+        if (!container || !select) return;
+        
+        // Show the container for admins
+        container.style.display = 'block';
+        
+        // Populate the select with users
+        select.innerHTML = '';
+        
+        // Add current user as first option (default)
+        const currentUserOption = document.createElement('option');
+        currentUserOption.value = this.currentUserId;
+        currentUserOption.textContent = 'Myself (default)';
+        currentUserOption.selected = true;
+        select.appendChild(currentUserOption);
+        
+        // Add other users
+        this.users.forEach(user => {
+            if (user.id !== this.currentUserId) {
+                const option = document.createElement('option');
+                option.value = user.id;
+                option.textContent = user.display_name;
+                select.appendChild(option);
+            }
+        });
+        
+        // Update button text when selection changes
+        select.addEventListener('change', () => {
+            this.updateUploadButton();
+        });
     }
     
     async renderYearsList(years) {
@@ -1022,7 +1081,21 @@ class Gallery {
             button.textContent = this.isUploading ? 'Uploading...' : 'Upload Selected';
         } else {
             button.disabled = false;
-            button.textContent = `Upload ${validFiles.length} File${validFiles.length === 1 ? '' : 's'}`;
+            
+            // Check if admin is uploading on behalf of someone
+            let buttonText = `Upload ${validFiles.length} File${validFiles.length === 1 ? '' : 's'}`;
+            
+            if (this.isAdmin) {
+                const uploadOnBehalfSelect = document.getElementById('uploadOnBehalfSelect');
+                if (uploadOnBehalfSelect && uploadOnBehalfSelect.value && uploadOnBehalfSelect.value !== this.currentUserId.toString()) {
+                    const selectedUser = this.users.find(u => u.id.toString() === uploadOnBehalfSelect.value);
+                    if (selectedUser) {
+                        buttonText += ` for ${selectedUser.display_name}`;
+                    }
+                }
+            }
+            
+            button.textContent = buttonText;
         }
         
         button.classList.toggle('uploading', this.isUploading);
@@ -1104,6 +1177,14 @@ class Gallery {
         formData.append('action', 'upload');
         formData.append('year', this.currentYear);
         formData.append('file', fileItem.file);
+        
+        // Add upload on behalf parameter for admins
+        if (this.isAdmin) {
+            const uploadOnBehalfSelect = document.getElementById('uploadOnBehalfSelect');
+            if (uploadOnBehalfSelect && uploadOnBehalfSelect.value) {
+                formData.append('uploadOnBehalf', uploadOnBehalfSelect.value);
+            }
+        }
         
         const response = await fetch('api.php', {
             method: 'POST',

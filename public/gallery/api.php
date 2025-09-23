@@ -27,6 +27,31 @@ try {
             echo json_encode(['years' => GalleryConfig::getAvailableYears()]);
             break;
             
+        case 'users':
+            // Only allow admins to get user list
+            if (!$auth->isAdmin()) {
+                throw new Exception('Admin access required');
+            }
+            
+            $db = $auth->getDbConnection();
+            
+            $users = $db->table('users')
+                ->select('id', 'username', 'nickname')
+                ->orderBy('username')
+                ->get();
+            
+            $userList = [];
+            foreach ($users as $userRow) {
+                $userList[] = [
+                    'id' => $userRow->id,
+                    'username' => $userRow->username,
+                    'display_name' => $userRow->nickname ?: $userRow->username,
+                ];
+            }
+            
+            echo json_encode(['users' => $userList]);
+            break;
+            
         case 'files':
             $year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
             if (!$year || $year < 2000 || $year > 3000) {
@@ -79,6 +104,27 @@ try {
                 throw new Exception('No file uploaded');
             }
             
+            // Handle "upload on behalf" functionality for admins
+            $uploadUserId = $user->id; // Default to current user
+            $uploadOnBehalf = isset($_POST['uploadOnBehalf']) ? (int)$_POST['uploadOnBehalf'] : null;
+            $targetUser = null;
+            
+            if ($uploadOnBehalf && $uploadOnBehalf !== $user->id) {
+                // Only admins can upload on behalf of others
+                if (!$auth->isAdmin()) {
+                    throw new Exception('Admin access required to upload on behalf of others');
+                }
+                
+                // Validate that the target user exists
+                $targetUser = $auth->validateUser($uploadOnBehalf);
+                
+                if (!$targetUser) {
+                    throw new Exception('Target user not found');
+                }
+                
+                $uploadUserId = $uploadOnBehalf;
+            }
+            
             // Handle single file upload
             $uploadedFile = $_FILES['file'];
             
@@ -95,14 +141,20 @@ try {
                 throw new Exception('File type not allowed. Please use: ' . implode(', ', $allowedExtensions));
             }
             
-            $filename = GalleryManager::uploadFile($year, $uploadedFile, $user->id);
+            $filename = GalleryManager::uploadFile($year, $uploadedFile, $uploadUserId);
+            
+            $message = 'File uploaded successfully';
+            if ($uploadOnBehalf && $uploadOnBehalf !== $user->id && $targetUser) {
+                $message .= " on behalf of {$targetUser->username}";
+            }
             
             echo json_encode([
                 'success' => true,
                 'filename' => $filename,
-                'message' => 'File uploaded successfully',
+                'message' => $message,
                 'size' => $uploadedFile['size'],
-                'type' => $extension
+                'type' => $extension,
+                'uploadedForUser' => $uploadUserId
             ]);
             break;
             
