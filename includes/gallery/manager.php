@@ -185,7 +185,7 @@ class GalleryManager {
             'png' => ['image/png'],
             'webp' => ['image/webp'],
             'gif' => ['image/gif'],
-            'mp4' => ['video/mp4'],
+            'mp4' => ['video/mp4', 'video/x-m4v'],
             'webm' => ['video/webm'],
             'mov' => ['video/quicktime'],
             'avi' => ['video/x-msvideo', 'video/avi']
