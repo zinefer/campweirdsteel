@@ -25,7 +25,7 @@ class ImprovedSlideshow {
     }
     
     start() {
-        if (this.gallery.files.length <= 1) {
+        if (this.gallery.displayedFiles.length <= 1) {
             this.gallery.showNotification('Need at least 2 files for slideshow', 'info');
             return false;
         }
@@ -81,7 +81,7 @@ class ImprovedSlideshow {
         
         this.clearAllTimers();
         
-        const currentFile = this.gallery.files[this.gallery.currentFileIndex];
+        const currentFile = this.gallery.displayedFiles[this.gallery.currentFileIndex];
         if (!currentFile) return;
         
         if (currentFile.type === 'video') {
@@ -236,6 +236,7 @@ class Gallery {
     constructor() {
         this.currentYear = new Date().getFullYear();
         this.files = [];
+        this.displayedFiles = []; // this.files sorted per the active sortMode; drives modal/slideshow navigation
         this.selectedFile = null;
         this.currentFileIndex = 0;
         this.currentUserId = window.GALLERY_CONFIG?.currentUserId || 0;
@@ -474,7 +475,10 @@ class Gallery {
         
         // Apply sorting
         const sortedFiles = this.sortFiles([...this.files]);
-        
+        // Keep track of the order actually rendered so the modal/slideshow can
+        // navigate through images in the order the user sees them
+        this.displayedFiles = sortedFiles;
+
         grid.innerHTML = sortedFiles.map((file, index) => {
             // Find original index by filename to avoid issues with object references after sorting
             const originalIndex = this.files.findIndex(f => f.filename === file.filename);
@@ -1366,21 +1370,21 @@ class Gallery {
     }
     
     openModal(index) {
-        if (!this.files || this.files.length === 0) return;
-        
+        if (!this.displayedFiles || this.displayedFiles.length === 0) return;
+
         this.currentFileIndex = index;
-        const file = this.files[index];
-        
+        const file = this.displayedFiles[index];
+
         const modal = document.getElementById('galleryModal');
         const modalMedia = document.getElementById('modalMedia');
         const modalFilename = document.getElementById('modalFilename');
         const modalMetadata = document.getElementById('modalMetadata');
         const modalCounter = document.getElementById('modalCounter');
-        
+
         // Update filename and metadata (using textContent to prevent XSS)
         modalFilename.textContent = this.getDisplayName(file.filename);
         modalMetadata.textContent = `${this.formatFileSize(file.size)} • ${this.formatDate(file.modified)}`;
-        modalCounter.textContent = `${index + 1} of ${this.files.length}`;
+        modalCounter.textContent = `${index + 1} of ${this.displayedFiles.length}`;
         
         // Load media content safely
         modalMedia.innerHTML = '';
@@ -1407,8 +1411,8 @@ class Gallery {
         // Show/hide navigation buttons
         const prevBtn = document.getElementById('modalPrev');
         const nextBtn = document.getElementById('modalNext');
-        prevBtn.style.display = this.files.length > 1 ? 'block' : 'none';
-        nextBtn.style.display = this.files.length > 1 ? 'block' : 'none';
+        prevBtn.style.display = this.displayedFiles.length > 1 ? 'block' : 'none';
+        nextBtn.style.display = this.displayedFiles.length > 1 ? 'block' : 'none';
         
         modal.classList.add('show');
         document.body.style.overflow = 'hidden';
@@ -1431,27 +1435,27 @@ class Gallery {
     }
     
     previousImage() {
-        if (this.files.length <= 1) return;
-        
+        if (this.displayedFiles.length <= 1) return;
+
         // Notify slideshow of manual navigation
         this.slideshow.onManualNavigation();
-        
-        this.currentFileIndex = (this.currentFileIndex - 1 + this.files.length) % this.files.length;
+
+        this.currentFileIndex = (this.currentFileIndex - 1 + this.displayedFiles.length) % this.displayedFiles.length;
         this.updateModalContent();
     }
-    
+
     nextImage() {
-        if (this.files.length <= 1) return;
-        
+        if (this.displayedFiles.length <= 1) return;
+
         // Notify slideshow of manual navigation
         this.slideshow.onManualNavigation();
-        
-        this.currentFileIndex = (this.currentFileIndex + 1) % this.files.length;
+
+        this.currentFileIndex = (this.currentFileIndex + 1) % this.displayedFiles.length;
         this.updateModalContent();
     }
-    
+
     updateModalContent() {
-        const file = this.files[this.currentFileIndex];
+        const file = this.displayedFiles[this.currentFileIndex];
         const modalMedia = document.getElementById('modalMedia');
         const modalFilename = document.getElementById('modalFilename');
         const modalMetadata = document.getElementById('modalMetadata');
@@ -1463,7 +1467,7 @@ class Gallery {
         setTimeout(() => {
             modalFilename.textContent = this.getDisplayName(file.filename);
             modalMetadata.textContent = `${this.formatFileSize(file.size)} • ${this.formatDate(file.modified)}`;
-            modalCounter.textContent = `${this.currentFileIndex + 1} of ${this.files.length}`;
+            modalCounter.textContent = `${this.currentFileIndex + 1} of ${this.displayedFiles.length}`;
             
             modalMedia.innerHTML = '';
             
@@ -1513,7 +1517,7 @@ class Gallery {
     }
     
     downloadCurrentFile() {
-        const file = this.files[this.currentFileIndex];
+        const file = this.displayedFiles[this.currentFileIndex];
         if (!file) return;
         
         const link = document.createElement('a');
