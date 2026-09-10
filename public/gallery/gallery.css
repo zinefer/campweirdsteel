@@ -1571,6 +1571,8 @@ button.file-status {
         width: 100%;
         height: auto;
         position: static;
+        overflow-y: visible;
+        overscroll-behavior: auto;
         border-right: none;
         border-bottom: 2px solid var(--rule);
     }
