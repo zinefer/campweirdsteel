@@ -320,6 +320,18 @@ class GalleryManager {
             if (function_exists('exif_read_data') && in_array(strtolower(pathinfo($filename, PATHINFO_EXTENSION)), ['jpg', 'jpeg'])) {
                 $exif = @exif_read_data($filePath);
                 if ($exif !== false) {
+                    // getimagesize() reports the pixels as stored, but phones
+                    // store portrait shots sideways and set Orientation 5-8 to
+                    // say "rotate 90°". The browser honours that when it draws
+                    // the thumbnail (the flag is copied onto it), so the grid
+                    // has to size the tile for the rotated shape too, or a
+                    // portrait photo gets a landscape tile.
+                    if (isset($metadata['width'], $exif['Orientation'])
+                        && in_array((int) $exif['Orientation'], [5, 6, 7, 8], true)) {
+                        [$metadata['width'], $metadata['height']] = [$metadata['height'], $metadata['width']];
+                        $metadata['dimensions'] = $metadata['width'] . 'x' . $metadata['height'];
+                    }
+
                     // Date taken
                     if (isset($exif['DateTime'])) {
                         $dateTaken = strtotime($exif['DateTime']);

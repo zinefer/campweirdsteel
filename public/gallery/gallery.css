@@ -661,6 +661,11 @@ button.file-status {
     /* Set per tile from the stored dimensions, so photos keep their shape and
        the grid does not reflow once the image loads. */
     aspect-ratio: var(--ratio, 1);
+    /* aspect-ratio is only a preference: with overflow visible, a box grows
+       to fit content taller than the ratio allows. Clipping keeps the ratio
+       binding, so a tile whose stored dimensions are wrong letterboxes
+       (object-fit: contain) instead of making its whole row uneven. */
+    overflow: hidden;
 }
 
 .g-tile-open img,
