@@ -1,3 +1,32 @@
+:root {
+    /* Brand */
+    --ember: #ff6b35;
+    --ember-deep: #f7931e;
+    --ember-gradient: linear-gradient(45deg, var(--ember), var(--ember-deep));
+
+    /* Ink for text sitting ON a bright fill. White on #ff6b35 is 2.8:1 and
+       fails AA; this near-black is 6.7:1 on the ember and 8.2:1 on the deep. */
+    --on-accent: #14100a;
+
+    /* Grounds */
+    --ground: #0a0a0a;
+    --surface: #1a1a1a;
+    --surface-raised: #2a2a2a;
+    --rule: #333;
+
+    /* Text. --text-dim replaces the old #666, which measured 2.4:1 on the
+       sidebar and was carrying the upload constraints. */
+    --text: #fff;
+    --text-body: #ccc;
+    --text-dim: #9b9184;
+
+    /* Semantic */
+    --ok: #28a745;
+    --warn: #d9a441;
+    --danger: #dc3545;
+    --info: #4a9eff;
+}
+
 * {
     margin: 0;
     padding: 0;
@@ -6,9 +35,17 @@
 
 body {
     font-family: 'Arial', sans-serif;
-    background: #0a0a0a;
-    color: #fff;
+    background: var(--ground);
+    color: var(--text);
     overflow-x: hidden;
+}
+
+/* One focus policy for the whole site. :focus-visible means pointer users
+   never see it, so there is no reason to suppress it anywhere. */
+:focus-visible {
+    outline: 2px solid var(--ember);
+    outline-offset: 3px;
+    border-radius: 2px;
 }
 
 /* Animated background particles */
@@ -93,10 +130,11 @@ body {
 .cta-button {
     padding: 15px 40px;
     font-size: 1.2rem;
-    background: linear-gradient(45deg, #ff6b35, #f7931e);
+    background: var(--ember-gradient);
     border: none;
     border-radius: 50px;
-    color: white;
+    color: var(--on-accent);
+    font-weight: 700;
     cursor: pointer;
     transition: all 0.3s ease;
     margin: 10px;
@@ -126,8 +164,17 @@ body {
     box-shadow: 0 10px 20px rgba(255, 107, 53, 0.3);
 }
 
-/* Navigation */
-nav {
+/* Navigation.
+   
+   Scoped to #navbar, not a bare `nav` selector. This is site chrome — fixed to
+   the top of the viewport at full width — and any other <nav> on the page is
+   not that. The gallery's "Years" sidebar panel is a <nav> for screen readers,
+   and a bare selector tore it out of the sidebar and pinned it across the top
+   of the page, with its year rows stretched to full width over the headings.
+   
+   The element already carries this id (includes/navigation.php) and main.js
+   toggles .scrolled on it by id, so nothing else has to change. */
+#navbar {
     position: fixed;
     top: 0;
     width: 100%;
@@ -138,7 +185,7 @@ nav {
     transition: all 0.3s ease;
 }
 
-nav.scrolled {
+#navbar.scrolled {
     background: rgba(0, 0, 0, 0.95);
     padding: 15px 50px;
 }
@@ -276,7 +323,7 @@ nav.scrolled {
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #666;
+    color: var(--text-dim);
     font-size: 1.1rem;
     text-align: center;
 }
@@ -286,16 +333,43 @@ nav.scrolled {
     .logo {
         font-size: 3rem;
     }
-    
+
     .section {
         padding: 50px 20px;
     }
-    
-    nav {
+
+    /* Must stay in step with the #navbar selector above: an id outranks a
+       bare element, so a `nav` rule here would silently lose. */
+    #navbar {
         padding: 15px 20px;
     }
-    
+
     .nav-links {
         gap: 15px;
+    }
+}
+
+/* Site-wide motion policy. The gallery and the landing page between them run
+   the title shimmer, 50 particles, the slideshow pulse and the button sweep
+   indefinitely and simultaneously. Honour the OS setting for all of it in one
+   place, so new animations are covered by default rather than by remembering. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+
+    /* The shimmer paints text via a moving gradient; frozen mid-animation it can
+       land on a transparent stop, so give these a flat fill instead. */
+    .logo,
+    .sidebar-title,
+    .gallery-main-title {
+        background: none !important;
+        -webkit-text-fill-color: var(--ember) !important;
+        color: var(--ember) !important;
     }
 }

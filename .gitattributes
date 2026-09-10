@@ -1,0 +1,4 @@
+# The repo is LF and always has been. Pinning it because 19 files arrived in
+# the working tree converted to CRLF, which showed up in review as whole-file
+# rewrites with no actual edits in them.
+* text=auto eol=lf

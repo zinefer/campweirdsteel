@@ -1,5 +1,14 @@
 /* Gallery-specific styles extending the main theme */
 
+/* The `hidden` attribute is how every panel on this page is toggled, but
+   `[hidden] { display: none }` lives in the UA stylesheet, so any author rule
+   with a `display` beats it. `.upload-controls { display: flex }` did exactly
+   that: switching to a past year showed the "uploads are closed" note with a
+   fully working file picker still under it. */
+[hidden] {
+    display: none !important;
+}
+
 /* Import shimmer animation from main styles */
 @keyframes shimmer {
     0%, 100% { background-position: 0% 50%; }
@@ -7,48 +16,67 @@
 }
 
 /* Reset and Layout */
+/* --nav-h is measured from #navbar by gallery.js, so the layout meets the
+   fixed nav exactly whatever its real height (a guessed 70px left a gap). */
+:root {
+    --nav-h: 70px;
+}
+
+/* The nav shrinks once the page scrolls. Here that would open a gap above the
+   sticky sidebar, so it holds its height. The mobile rule also restores the
+   narrow side padding, which #navbar.scrolled otherwise overrides. */
+#navbar.scrolled {
+    padding-block: 20px;
+}
+
+@media (max-width: 768px) {
+    #navbar.scrolled {
+        padding: 15px 20px;
+    }
+}
+
 .gallery-layout {
     display: flex;
     min-height: 100vh;
-    padding-top: 70px; /* Account for fixed nav */
-    background: #0a0a0a;
+    padding-top: var(--nav-h);
+    background: var(--ground);
     position: relative;
-    overflow-x: hidden;
-}
-
-/* Ensure no modal content leaks into layout */
-.gallery-layout * {
-    /*position: relative;*/
-    z-index: 1;
-}
-
-.modal, .compression-modal {
-    z-index: 2000 !important;
+    /* clip, not hidden: overflow-x: hidden turns this into a scroll container,
+       which makes the sidebar sticky to an element that never scrolls. It then
+       scrolled away with the page. */
+    overflow-x: clip;
+    /* Contains its own stacking. Replaces a blanket `.gallery-layout * { z-index: 1 }`
+       that had to be undone by `!important` on the modals. */
+    isolation: isolate;
 }
 
 /* Sidebar Styles */
 .gallery-sidebar {
+    flex-shrink: 0;
     width: 320px;
-    background: linear-gradient(180deg, #1a1a1a 0%, #151515 100%);
-    border-right: 2px solid #333;
+    background: var(--surface);
+    border-right: 2px solid var(--rule);
     padding: 2rem 1.5rem;
     overflow-y: auto;
+    overscroll-behavior: contain;
     position: sticky;
-    top: 70px;
-    height: calc(100vh - 70px);
+    top: var(--nav-h);
+    align-self: flex-start;
+    height: calc(100vh - var(--nav-h));
+    height: calc(100dvh - var(--nav-h));
 }
 
 .sidebar-header {
     margin-bottom: 2rem;
     text-align: center;
     padding-bottom: 1.5rem;
-    border-bottom: 2px solid #333;
+    border-bottom: 2px solid var(--rule);
 }
 
 .sidebar-title {
     font-size: 2.5rem;
     font-weight: 900;
-    background: linear-gradient(45deg, #ff6b35, #f7931e, #ff6b35);
+    background: linear-gradient(45deg, var(--ember), var(--ember-deep), var(--ember));
     background-size: 200% 200%;
     -webkit-background-clip: text;
     background-clip: text;
@@ -58,20 +86,20 @@
 }
 
 .sidebar-subtitle {
-    color: #ccc;
+    color: var(--text-body);
     font-size: 0.95rem;
     line-height: 1.4;
 }
 
 .user-name {
-    color: #ff6b35;
+    color: var(--ember);
     font-weight: bold;
 }
 
 .sidebar-section {
     margin-bottom: 2rem;
     padding-bottom: 1.5rem;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--rule);
 }
 
 .sidebar-section:last-child {
@@ -81,14 +109,14 @@
 .section-title {
     font-size: 1.1rem;
     font-weight: 700;
-    color: #ff6b35;
+    color: var(--ember);
     margin-bottom: 1rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
 
 .section-text {
-    color: #ccc;
+    color: var(--text-body);
     font-size: 0.9rem;
     line-height: 1.5;
 }
@@ -104,14 +132,14 @@
 .upload-on-behalf {
     padding: 0.75rem;
     background: rgba(255, 107, 53, 0.1);
-    border: 1px solid #ff6b35;
+    border: 1px solid var(--ember);
     border-radius: 8px;
     margin-bottom: 0.5rem;
 }
 
 .upload-behalf-label {
     display: block;
-    color: #ff6b35;
+    color: var(--ember);
     font-size: 0.85rem;
     font-weight: 600;
     margin-bottom: 0.5rem;
@@ -130,10 +158,10 @@
     transition: all 0.2s ease;
 }
 
-.upload-behalf-select:focus {
-    outline: none;
-    border-color: #ff6b35;
-    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.2);
+.upload-behalf-select:focus-visible {
+    outline: 2px solid var(--ember);
+    outline-offset: 2px;
+    border-color: var(--ember);
 }
 
 .upload-behalf-select option {
@@ -153,13 +181,16 @@
     pointer-events: none;
 }
 
+/* Upload is a two-step flow with one accent colour: choosing files is the
+   outlined secondary step, and the filled ember button is the commit. It used
+   to be ember, then green, then Bootstrap blue while it ran. */
 .file-input-label {
     display: block;
-    padding: 12px 20px;
-    background: linear-gradient(45deg, #ff6b35, #f7931e);
-    border: none;
+    padding: 10px 20px;
+    background: transparent;
+    border: 2px solid var(--ember);
     border-radius: 25px;
-    color: white;
+    color: var(--ember);
     cursor: pointer;
     text-align: center;
     transition: all 0.3s ease;
@@ -171,19 +202,14 @@
 }
 
 .file-input-label:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(255, 107, 53, 0.3);
-}
-
-.file-input-label:active {
-    transform: translateY(0);
+    background: rgba(255, 107, 53, 0.12);
 }
 
 .selected-files {
     max-height: 200px;
     overflow-y: auto;
     border-radius: 15px;
-    background: #333;
+    background: var(--rule);
     border: 1px solid #444;
 }
 
@@ -191,7 +217,7 @@
     content: 'No files selected';
     display: block;
     padding: 12px;
-    color: #ccc;
+    color: var(--text-body);
     font-size: 0.85rem;
     text-align: center;
 }
@@ -215,12 +241,12 @@
 
 .file-item.error {
     background: rgba(220, 53, 69, 0.1);
-    border-color: #dc3545;
+    border-color: var(--danger);
 }
 
 .file-item.warning {
-    background: rgba(255, 193, 7, 0.1);
-    border-color: #ffc107;
+    background: rgba(217, 164, 65, 0.1);
+    border-color: var(--warn);
 }
 
 .file-info {
@@ -240,42 +266,50 @@
 
 .file-meta {
     font-size: 0.7rem;
-    color: #ccc;
+    color: var(--text-body);
     display: flex;
     gap: 8px;
 }
 
 .file-status {
     font-size: 0.7rem;
-    padding: 2px 6px;
+    padding: 4px 8px;
     border-radius: 10px;
     font-weight: 600;
     white-space: nowrap;
+    border: none;
+    font-family: inherit;
+}
+
+button.file-status {
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
 }
 
 .file-status.ready {
     background: rgba(40, 167, 69, 0.2);
-    color: #28a745;
+    color: var(--ok);
 }
 
 .file-status.error {
     background: rgba(220, 53, 69, 0.2);
-    color: #dc3545;
+    color: var(--danger);
 }
 
 .file-status.warning {
-    background: rgba(255, 193, 7, 0.2);
-    color: #ffc107;
+    background: rgba(217, 164, 65, 0.2);
+    color: var(--warn);
 }
 
 .file-status.uploading {
-    background: rgba(0, 123, 255, 0.2);
-    color: #007bff;
+    background: rgba(255, 107, 53, 0.18);
+    color: var(--ember);
 }
 
 .file-status.success {
     background: rgba(40, 167, 69, 0.2);
-    color: #28a745;
+    color: var(--ok);
 }
 
 .file-actions {
@@ -283,32 +317,34 @@
     gap: 4px;
 }
 
+/* Taking a file out of the queue loses nothing, so it is a quiet ×, not a
+   red alarm button. */
 .file-remove {
-    background: #dc3545;
-    border: none;
-    color: white;
-    width: 20px;
-    height: 20px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-dim);
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
     cursor: pointer;
-    font-size: 0.7rem;
+    font-size: 1rem;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s ease;
+    transition: color 0.2s ease, border-color 0.2s ease;
 }
 
 .file-remove:hover {
-    background: #c82333;
-    transform: scale(1.1);
+    color: var(--text);
+    border-color: var(--rule);
 }
 
 .upload-button {
     padding: 12px 20px;
-    background: linear-gradient(45deg, #28a745, #20c997);
+    background: var(--ember-gradient);
     border: none;
     border-radius: 25px;
-    color: white;
+    color: var(--on-accent);
     cursor: pointer;
     transition: all 0.3s ease;
     font-size: 0.9rem;
@@ -318,23 +354,26 @@
 
 .upload-button:hover:not(:disabled) {
     transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(40, 167, 69, 0.3);
+    box-shadow: 0 5px 15px rgba(255, 107, 53, 0.3);
 }
 
 .upload-button:disabled {
-    opacity: 0.5;
+    opacity: 0.6;
     cursor: not-allowed;
-    background: #666;
+    background: var(--surface-raised);
+    color: var(--text-dim);
 }
 
 .upload-button.uploading {
-    background: #007bff;
-    cursor: not-allowed;
+    opacity: 1;
+    background: var(--surface-raised);
+    color: var(--ember);
+    cursor: progress;
 }
 
 .upload-info {
     text-align: center;
-    color: #666;
+    color: var(--text-dim);
     font-size: 0.8rem;
 }
 
@@ -342,8 +381,8 @@
 .upload-progress {
     margin-top: 1rem;
     padding: 1rem;
-    background: rgba(0, 123, 255, 0.1);
-    border: 1px solid #007bff;
+    background: var(--surface-raised);
+    border: 1px solid var(--rule);
     border-radius: 15px;
 }
 
@@ -356,24 +395,24 @@
 }
 
 .progress-text {
-    color: #007bff;
+    color: var(--ember);
     font-weight: 600;
 }
 
 .progress-count {
-    color: #ccc;
+    color: var(--text-body);
 }
 
 .progress-bar-container {
     height: 8px;
-    background: #333;
+    background: var(--rule);
     border-radius: 10px;
     overflow: hidden;
 }
 
 .progress-bar-fill {
     height: 100%;
-    background: linear-gradient(45deg, #007bff, #0056b3);
+    background: var(--ember-gradient);
     width: 0%;
     transition: width 0.3s ease;
     border-radius: 10px;
@@ -390,6 +429,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    width: 100%;
+    text-align: left;
+    font: inherit;
     padding: 12px 16px;
     background: linear-gradient(135deg, #2a2a2a, #333);
     border: 2px solid transparent;
@@ -416,18 +458,19 @@
 }
 
 .year-item:hover {
-    border-color: #ff6b35;
+    border-color: var(--ember);
     transform: translateX(5px);
 }
 
 .year-item.active {
-    background: linear-gradient(135deg, #ff6b35, #f7931e);
-    border-color: #ff6b35;
-    color: white;
+    background: linear-gradient(135deg, var(--ember), var(--ember-deep));
+    border-color: var(--ember);
+    color: var(--on-accent);
 }
 
+.year-item.active .year-number,
 .year-item.active .year-stats {
-    color: rgba(255, 255, 255, 0.9);
+    color: var(--on-accent);
 }
 
 .year-number {
@@ -438,7 +481,7 @@
 
 .year-stats {
     font-size: 0.8rem;
-    color: #ccc;
+    color: var(--text-body);
     display: flex;
     flex-direction: column;
     align-items: flex-end;
@@ -451,26 +494,6 @@
 
 .year-size {
     opacity: 0.8;
-}
-
-/* Current Selection */
-.current-selection {
-    background: linear-gradient(135deg, #1a0000, #2a0a0a);
-    padding: 1.5rem;
-    border-radius: 15px;
-    border: 2px solid #ff6b35;
-}
-
-.current-year {
-    text-align: center;
-}
-
-.current-year-number {
-    display: block;
-    font-size: 2rem;
-    font-weight: 900;
-    color: #ff6b35;
-    margin-bottom: 0.5rem;
 }
 
 /* Main Content Area */
@@ -488,7 +511,7 @@
 .gallery-main-title {
     font-size: 3.5rem;
     font-weight: 900;
-    background: linear-gradient(45deg, #ff6b35, #f7931e, #ff6b35);
+    background: linear-gradient(45deg, var(--ember), var(--ember-deep), var(--ember));
     background-size: 200% 200%;
     -webkit-background-clip: text;
     background-clip: text;
@@ -498,12 +521,29 @@
     line-height: 1.1;
 }
 
-.gallery-description {
-    color: #ccc;
-    font-size: 1.2rem;
-    line-height: 1.6;
-    max-width: 600px;
-    margin: 0 auto;
+/* Upload availability notice. Replaces display:none-ing the whole upload
+   section on past years, which read as the controls having broken. */
+.upload-closed {
+    margin-bottom: 0.75rem;
+    padding: 10px 12px;
+    background: var(--surface-raised);
+    border-left: 3px solid var(--ember);
+    border-radius: 8px;
+    color: var(--text-body);
+    font-size: 0.85rem;
+    line-height: 1.45;
+}
+
+.years-empty {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 1.5rem 0;
+}
+
+.year-mix {
+    font-size: 0.7rem;
+    opacity: 0.85;
 }
 
 /* Gallery Controls */
@@ -511,233 +551,241 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 2rem;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.5rem;
     padding: 1rem 0;
-    border-bottom: 2px solid #333;
+    border-bottom: 2px solid var(--rule);
 }
 
-.view-options {
+.sort-options {
     display: flex;
-    gap: 5px;
-    background: #333;
-    border-radius: 25px;
-    padding: 5px;
+    align-items: center;
+    gap: 10px;
 }
 
-.view-btn {
-    padding: 8px 20px;
-    background: transparent;
-    border: none;
-    border-radius: 20px;
-    color: #ccc;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    font-size: 0.9rem;
-}
-
-.view-btn.active {
-    background: linear-gradient(45deg, #ff6b35, #f7931e);
-    color: white;
+.sort-label {
+    color: var(--text-dim);
+    font-size: 0.85rem;
 }
 
 .sort-select {
     padding: 8px 16px;
-    background: #333;
+    background: var(--rule);
     border: 2px solid #444;
     border-radius: 20px;
-    color: #ccc;
+    color: var(--text-body);
     font-size: 0.9rem;
     cursor: pointer;
 }
 
-.sort-select:focus {
-    outline: none;
-    border-color: #ff6b35;
+.sort-select:focus-visible {
+    outline: 2px solid var(--ember);
+    outline-offset: 2px;
+    border-color: var(--ember);
 }
 
-/* Gallery Grid */
+/* ==========================================================================
+   Gallery grid
+
+   Namespaced .g-tile rather than .gallery-item: styles.css already owns
+   .gallery-item for the landing page's art preview, and both stylesheets load
+   here. The old name meant styles.css's .gallery-item::before was laying an
+   unintended orange wash over every tile, and its .file-name / .file-meta
+   rules were silently resizing the upload queue's text.
+   ========================================================================== */
 .gallery-content {
     position: relative;
 }
 
+/* Justified rows. Tiles read strictly left to right, top to bottom, so the
+   sort order is the visual order. (The old row-span masonry let a later tile
+   rise up beside earlier ones in a shorter column.)
+
+   Each tile's basis is its aspect ratio times the target row height, and it
+   grows in proportion to that same ratio. Every tile in a row therefore
+   scales by the same factor, so all tiles in a row come out the same height
+   while the row fills the full width. No JS measuring is needed. */
 .gallery-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 24px;
-    margin-bottom: 2rem;
-}
-
-.gallery-item {
-    background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
-    border-radius: 20px;
-    overflow: hidden;
-    position: relative;
-    aspect-ratio: 1;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    border: 2px solid transparent;
-    /* Fix for rounded corners during hover animation */
-    transform: translateZ(0);
-}
-
-.gallery-item:hover {
-    transform: scale(1.02) rotate(0.5deg);
-    border-color: #ff6b35;
-    box-shadow: 0 15px 30px rgba(255, 107, 53, 0.2);
-}
-
-.gallery-item-content {
-    width: 100%;
-    height: 100%;
+    --row-h: 220px;
     display: flex;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-    overflow: hidden;
-    /* Ensure the content respects the parent's border-radius */
-    border-radius: inherit;
+    flex-wrap: wrap;
+    gap: 24px 16px;
+    margin-bottom: 2rem;
+    align-items: flex-start;
 }
 
-.gallery-item img, .gallery-item video {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    transition: transform 0.3s ease;
-    /* Apply the same border-radius to the media elements */
-    border-radius: 20px;
-    /* Ensure they don't overflow their container */
-    display: block;
-    /* Force hardware acceleration for smoother transforms */
-    transform: translateZ(0);
-    /* Ensure the border-radius is maintained during scaling */
-    backface-visibility: hidden;
+/* Soaks up the free space on the last row so its tiles stay at the target
+   height instead of blowing up to fill the width. */
+.gallery-grid::after {
+    content: "";
+    flex-grow: 1000000;
 }
 
-.gallery-item:hover img,
-.gallery-item:hover video {
-    transform: scale(1.05);
-}
-
-.gallery-item-overlay {
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.9) 100%);
-    opacity: 0;
-    transition: opacity 0.3s ease;
+.g-tile {
     display: flex;
     flex-direction: column;
-    justify-content: flex-end;
-    padding: 1.5rem;
+    flex: var(--ratio, 1.5) 1 calc(var(--ratio, 1.5) * var(--row-h));
+    min-width: 0;
+    max-width: 100%;
+    margin: 0;
 }
 
-.gallery-item:hover .gallery-item-overlay {
-    opacity: 1;
-}
-
-.gallery-item-info {
-    color: white;
-    margin-bottom: 1rem;
-}
-
-.file-name {
-    font-size: 0.9rem;
-    font-weight: 600;
-    margin-bottom: 0.25rem;
-}
-
-.file-meta {
-    font-size: 0.8rem;
-    color: #ccc;
-}
-
-.gallery-item-actions {
+.g-tile-inner {
+    position: relative;
     display: flex;
-    gap: 10px;
+    flex-direction: column;
+    background: var(--surface);
+    border: 2px solid transparent;
+    border-radius: 16px;
+    overflow: hidden;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.action-btn {
-    padding: 6px 12px;
+.g-tile:hover .g-tile-inner,
+.g-tile:focus-within .g-tile-inner {
+    border-color: var(--ember);
+    box-shadow: 0 10px 24px rgba(255, 107, 53, 0.18);
+}
+
+/* Open control. The media is the button, so the whole picture is one large
+   target and reachable by Tab. */
+.g-tile-open {
+    display: block;
+    position: relative;
+    width: 100%;
+    padding: 0;
     border: none;
-    border-radius: 15px;
-    color: white;
+    background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
     cursor: pointer;
-    font-size: 0.8rem;
-    font-weight: 600;
-    transition: all 0.3s ease;
+    /* Set per tile from the stored dimensions, so photos keep their shape and
+       the grid does not reflow once the image loads. */
+    aspect-ratio: var(--ratio, 1);
 }
 
-.delete-btn {
-    background: #dc3545;
+.g-tile-open img,
+.g-tile-open video {
+    display: block;
+    width: 100%;
+    height: 100%;
+    /* contain, not cover: the composition is the content. */
+    object-fit: contain;
+    background: #111;
 }
 
-.delete-btn:hover {
-    background: #c82333;
-    transform: scale(1.05);
-}
-
-.info-btn {
-    background: #007bff;
-}
-
-.info-btn:hover {
-    background: #0056b3;
-    transform: scale(1.05);
-}
-
-.video-indicator {
+.g-tile-badge {
     position: absolute;
     top: 10px;
     right: 10px;
-    background: rgba(0, 0, 0, 0.8);
-    color: white;
+    background: rgba(0, 0, 0, 0.82);
+    color: var(--text);
     padding: 4px 8px;
     border-radius: 6px;
     font-size: 0.75rem;
     font-weight: 600;
     backdrop-filter: blur(10px);
-    z-index: 10;
+    pointer-events: none;
 }
 
-.video-indicator::before {
+.g-tile-badge::before {
     content: "🎥 ";
 }
 
-/* Video placeholder styling */
-.video-placeholder {
-    cursor: pointer;
-    position: relative;
+/* Hover preview for video tiles, laid over the poster. Muted because it starts
+   on hover, which browsers do not count as permission to play sound. */
+.g-tile-open video.g-tile-preview {
+    position: absolute;
+    inset: 0;
 }
 
-.video-placeholder::after {
+.g-tile-open.is-video::after,
+.g-tile-open .g-tile-badge {
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.g-tile-open.is-previewing::after,
+.g-tile-open.is-previewing .g-tile-badge {
+    opacity: 0;
+}
+
+/* Caption. Rendered only when Details is on (or for the drag grip while
+   rearranging), so the default grid is just the pictures. Delete is no longer
+   here; it is in the viewer. */
+.g-tile-cap {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--surface);
+    border-top: 1px solid var(--rule);
+    min-height: 56px;
+}
+
+.g-tile-text {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.g-tile-by {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--ember);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.g-tile-meta {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.g-tile-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+/* Play affordance for video tiles. On the button, not the image: <img> is a
+   replaced element and cannot carry a pseudo-element. */
+.g-tile-open.is-video::after {
     content: '';
     position: absolute;
     top: 50%;
     left: 50%;
-    transform: translate(-50%, -50%);
-    width: 60px;
-    height: 60px;
-    background: rgba(255, 107, 53, 0.9);
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 24px;
-    color: white;
-    z-index: 10;
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-width: 15px 0 15px 26px;
+    border-color: transparent transparent transparent var(--text);
+    transform: translate(-40%, -50%);
+    filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.8));
     pointer-events: none;
-    transition: all 0.3s ease;
+    transition: transform 0.2s ease;
 }
 
-.video-placeholder:hover::after {
-    background: rgba(255, 107, 53, 1);
-    transform: translate(-50%, -50%) scale(1.1);
+.g-tile-open.is-video:hover::after {
+    transform: translate(-40%, -50%) scale(1.12);
 }
 
-/* Loading state for videos */
-.video-placeholder[style*="opacity: 0.5"]::after {
-    content: '';
-    background: rgba(255, 107, 53, 0.7);
-    animation: pulse 1.5s infinite;
+/* Fallback when a poster could not be generated */
+.g-tile-noposter {
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+        45deg,
+        #1c1c1c,
+        #1c1c1c 10px,
+        #222 10px,
+        #222 20px
+    );
 }
 
 @keyframes pulse {
@@ -745,70 +793,164 @@
     50% { opacity: 1; }
 }
 
-/* Drag and Drop Styles */
-.gallery-item.draggable {
-    cursor: grab;
+/* Video waiting on its re-encode. The file on disk is still whatever came off
+   the camera, so the tile deliberately offers nothing to click — it is a
+   placeholder holding the slot until the worker swaps the mp4 in. */
+.g-tile.is-converting .g-tile-open {
+    cursor: default;
 }
 
-.gallery-item.draggable:hover {
-    cursor: grab;
-    border-color: #ff6b35;
-    box-shadow: 0 8px 25px rgba(255, 107, 53, 0.3);
+.g-tile-open.is-converting-body {
+    display: block;
+    position: relative;
+    width: 100%;
+    aspect-ratio: var(--ratio, 1);
+    background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
 }
 
-.gallery-item.draggable:active {
-    cursor: grabbing;
+.g-tile.is-converting .g-tile-noposter {
+    animation: pulse 1.8s ease-in-out infinite;
 }
 
-.drag-handle {
-    position: absolute;
-    top: 15px;
-    left: 15px;
-    background: rgba(0,0,0,0.8);
-    color: #ff6b35;
-    padding: 6px 8px;
-    border-radius: 8px;
+.g-tile.is-converting .g-tile-badge::before {
+    content: "⏳ ";
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .g-tile.is-converting .g-tile-noposter {
+        animation: none;
+    }
+}
+
+/* ==========================================================================
+   Rearrange mode
+
+   Reordering is now an explicit mode rather than the default sort, and only
+   the files you are allowed to manage become draggable.
+   ========================================================================== */
+.view-toggles {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.rearrange-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: var(--surface-raised);
+    border: 2px solid var(--rule);
+    border-radius: 20px;
+    color: var(--text-body);
     font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.rearrange-toggle:hover {
+    border-color: var(--ember);
+    color: var(--text);
+}
+
+.rearrange-toggle[aria-pressed="true"] {
+    background: var(--ember-gradient);
+    border-color: var(--ember);
+    color: var(--on-accent);
+}
+
+.rearrange-hint {
+    margin-bottom: 1.25rem;
+    padding: 10px 14px;
+    background: rgba(255, 107, 53, 0.1);
+    border: 1px solid var(--ember);
+    border-radius: 10px;
+    color: var(--text-body);
+    font-size: 0.88rem;
+}
+
+.g-tile-grip {
     display: flex;
     align-items: center;
     justify-content: center;
-    backdrop-filter: blur(10px);
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-    user-select: none;
+    min-width: 44px;
+    min-height: 40px;
+    padding: 0 8px;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ember);
+    cursor: grab;
+    font-size: 0.9rem;
+    line-height: 1;
 }
 
-.gallery-item.draggable:hover .drag-handle {
+.g-tile-grip:active {
+    cursor: grabbing;
+}
+
+.is-rearranging .g-tile[draggable="true"] .g-tile-inner {
+    border-color: var(--rule);
+    border-style: dashed;
+}
+
+/* Position badge. During a drag these renumber live, so the dragged tile
+   reads out the slot it is about to take. */
+.g-tile-pos {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 2;
+    min-width: 26px;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.82);
+    color: var(--text);
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-align: center;
+    backdrop-filter: blur(10px);
+    pointer-events: none;
+}
+
+/* The tile in flight stays in the grid at its prospective position — that
+   placeholder is the drop indicator, so no separate marker is drawn on the
+   tile underneath. */
+.g-tile.dragging .g-tile-inner {
+    border-color: var(--ok);
+    border-style: solid;
+    box-shadow: 0 0 0 3px rgba(40, 167, 69, 0.35), 0 0 22px rgba(40, 167, 69, 0.4);
+}
+
+.g-tile.dragging .g-tile-open,
+.g-tile.dragging .g-tile-cap {
+    opacity: 0.5;
+}
+
+.g-tile.dragging .g-tile-pos {
+    background: var(--ok);
+    color: var(--on-accent);
     opacity: 1;
 }
 
-.gallery-item.dragging {
-    opacity: 0.5;
-    transform: rotate(2deg) scale(0.95);
-    border-color: #ff6b35;
-    box-shadow: 0 15px 30px rgba(255, 107, 53, 0.4);
+/* Everything else recedes while a drag is in flight, so the landing slot is
+   the thing the eye lands on. */
+.gallery-grid.is-dragging .g-tile:not(.dragging) .g-tile-inner {
+    opacity: 0.6;
 }
 
-.gallery-item.drag-over {
-    border-color: #28a745 !important;
-    box-shadow: 0 0 20px rgba(40, 167, 69, 0.5);
-    transform: scale(1.02);
-}
-
-/* Enhanced file meta styling for uploader info */
-.file-meta .uploader-info {
-    color: #ff6b35;
-    font-weight: 600;
+.gallery-grid.is-dragging .g-tile {
+    transition: transform 0.15s ease;
 }
 
 /* Loading and Empty States */
 .loading {
     text-align: center;
     padding: 4rem 2rem;
-    color: #ccc;
+    color: var(--text-body);
     font-size: 1.2rem;
-    grid-column: 1 / -1;
+    flex-basis: 100%;
 }
 
 .loading::before {
@@ -817,7 +959,7 @@
     width: 40px;
     height: 40px;
     border: 4px solid #333;
-    border-top: 4px solid #ff6b35;
+    border-top: 4px solid var(--ember);
     border-radius: 50%;
     animation: spin 1s linear infinite;
     margin-right: 1rem;
@@ -832,37 +974,27 @@
 .empty-gallery {
     text-align: center;
     padding: 4rem 2rem;
-    color: #666;
-    grid-column: 1 / -1;
+    color: var(--text-dim);
+    flex-basis: 100%;
 }
 
 .empty-gallery h3 {
     font-size: 1.8rem;
     margin-bottom: 1rem;
-    color: #ff6b35;
+    color: var(--ember);
 }
 
 .empty-gallery p {
-    font-size: 1.1rem;
+    font-size: 1.05rem;
     line-height: 1.6;
+    max-width: 46ch;
+    margin: 0 auto;
 }
 
-/* Progress Bar */
-.progress-bar {
-    position: fixed;
-    top: 80px;
-    left: 0;
-    width: 100%;
-    height: 4px;
-    background: rgba(255, 107, 53, 0.2);
-    z-index: 1000;
-}
-
-.progress-fill {
-    height: 100%;
-    background: linear-gradient(45deg, #ff6b35, #f7931e);
-    width: 0%;
-    transition: width 0.3s ease;
+.empty-gallery-note {
+    margin-top: 1rem !important;
+    font-size: 0.9rem !important;
+    color: var(--text-dim);
 }
 
 /* Enhanced Modal Styles */
@@ -910,20 +1042,89 @@
 }
 
 .modal-filename {
-    color: #ff6b35;
+    color: var(--ember);
     font-weight: 600;
     font-size: 1.1rem;
 }
 
 .modal-metadata {
-    color: #ccc;
+    color: var(--text-body);
     font-size: 0.9rem;
+}
+
+/* The date in the metadata line, when the file is the viewer's own. Styled as
+   text with a dotted underline rather than as a button: it sits mid-sentence,
+   and a real button there would read as a third control next to Close. */
+.modal-date-edit {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--text-body);
+    cursor: pointer;
+    border-bottom: 1px dotted currentColor;
+}
+
+.modal-date-edit:hover,
+.modal-date-edit:focus-visible {
+    color: var(--ember);
+}
+
+.modal-date-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.15rem;
+}
+
+.modal-date-input {
+    background: var(--surface-raised);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    color: var(--text-body);
+    font: inherit;
+    padding: 0.25rem 0.4rem;
+    /* Safari lays this control out at its own intrinsic width otherwise, which
+       overflows the header on a phone. */
+    max-width: 100%;
+}
+
+.modal-date-input:focus-visible {
+    outline: 2px solid var(--ember);
+    outline-offset: 1px;
+}
+
+.modal-date-save,
+.modal-date-cancel {
+    background: none;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    color: var(--text-body);
+    cursor: pointer;
+    font: inherit;
+    padding: 0.25rem 0.6rem;
+}
+
+.modal-date-save {
+    border-color: var(--ember);
+    color: var(--ember);
+}
+
+.modal-date-save[disabled] {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.modal-date-save:hover:not([disabled]),
+.modal-date-cancel:hover {
+    background: var(--surface-raised);
 }
 
 .modal-close {
     background: none;
     border: none;
-    color: #ccc;
+    color: var(--text-body);
     font-size: 2rem;
     cursor: pointer;
     padding: 0.5rem;
@@ -938,7 +1139,7 @@
 
 .modal-close:hover {
     background: rgba(255, 107, 53, 0.2);
-    color: #ff6b35;
+    color: var(--ember);
 }
 
 .modal-body {
@@ -972,7 +1173,7 @@
     transform: translateY(-50%);
     background: rgba(0, 0, 0, 0.7);
     border: 2px solid rgba(255, 107, 53, 0.8);
-    color: #ff6b35;
+    color: var(--ember);
     cursor: pointer;
     width: 60px;
     height: 60px;
@@ -985,18 +1186,18 @@
 }
 
 .modal-nav:hover {
-    background: rgba(255, 107, 53, 0.9);
-    border-color: #ff6b35;
-    color: white;
+    background: rgba(255, 107, 53, 0.95);
+    border-color: var(--ember);
+    color: var(--on-accent);
     box-shadow: 0 8px 25px rgba(255, 107, 53, 0.4);
 }
 
-.modal-nav:focus {
-    outline: none;
+.modal-nav:focus-visible {
+    outline: 2px solid var(--ember);
+    outline-offset: 3px;
     background: rgba(255, 107, 53, 0.9);
-    border-color: #ff6b35;
-    color: white;
-    box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.3);
+    border-color: var(--ember);
+    color: var(--on-accent);
 }
 
 .modal-nav:active {
@@ -1035,27 +1236,6 @@
     margin-top: -4px;
 }
 
-/* Keyboard navigation hints */
-.modal-nav[data-key]::after {
-    content: attr(data-key);
-    position: absolute;
-    bottom: -25px;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 0.7rem;
-    color: #666;
-    background: rgba(0, 0, 0, 0.8);
-    padding: 2px 6px;
-    border-radius: 8px;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-    pointer-events: none;
-}
-
-.modal-nav:hover[data-key]::after {
-    opacity: 1;
-}
-
 .modal-footer {
     padding: 1.5rem 2rem;
     background: rgba(26, 26, 26, 0.9);
@@ -1066,14 +1246,52 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.modal-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.modal-btn-quiet {
+    background: transparent;
+    border: 1px solid var(--rule);
+    color: var(--text-body);
+}
+
+.modal-btn-quiet:hover {
+    border-color: var(--ember);
+    color: var(--text);
+    box-shadow: none;
+}
+
+/* The shortcut, shown rather than hidden. There was CSS for a key legend
+   driven by a [data-key] attribute that was never set on anything. */
+.modal-key {
+    font-family: inherit;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    margin-left: 8px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.25);
+}
+
+@media (hover: none) {
+    .modal-key { display: none; }
 }
 
 .modal-btn {
+    display: inline-flex;
+    align-items: center;
     padding: 8px 16px;
-    background: linear-gradient(45deg, #ff6b35, #f7931e);
+    background: var(--ember-gradient);
     border: none;
     border-radius: 20px;
-    color: white;
+    color: var(--on-accent);
     cursor: pointer;
     transition: all 0.3s ease;
     font-size: 0.9rem;
@@ -1087,49 +1305,40 @@
     box-shadow: 0 5px 15px rgba(255, 107, 53, 0.3);
 }
 
+/* Running slideshow: the button flips to outlined ember ("Stop Slideshow")
+   instead of turning green and pulsing, a colour the page used nowhere else. */
 .modal-btn.active {
-    background: linear-gradient(45deg, #2ecc71, #27ae60);
-    animation: modalPulse 2s infinite;
+    background: transparent;
+    box-shadow: inset 0 0 0 2px var(--ember);
+    color: var(--ember);
 }
 
-.modal-btn.active::after {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
-    animation: slide 2s infinite;
+/* Destructive and deliberately quiet. It sits apart from Slideshow and
+   Download, only turns red on hover or focus, and still asks for confirmation. */
+.modal-btn-danger {
+    background: transparent;
+    border: 1px solid var(--rule);
+    color: var(--text-dim);
 }
 
-@keyframes modalPulse {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.05); }
-}
-
-@keyframes slide {
-    0% { left: -100%; }
-    100% { left: 100%; }
+.modal-btn-danger:hover,
+.modal-btn-danger:focus-visible {
+    transform: none;
+    border-color: var(--danger);
+    color: #f28b95;
+    box-shadow: none;
 }
 
 .modal-counter {
-    color: #ccc;
+    color: var(--text-body);
     font-size: 0.9rem;
 }
 
 .slideshow-indicator {
-    color: #2ecc71;
+    color: var(--ember);
     font-size: 0.85rem;
     font-weight: 600;
-    animation: pulse 2s infinite;
     margin-top: 4px;
-}
-
-.slideshow-indicator span {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
 }
 
 @keyframes pulse {
@@ -1160,7 +1369,7 @@
 
 .compression-modal-content {
     background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
-    border: 2px solid #ff6b35;
+    border: 2px solid var(--ember);
     border-radius: 20px;
     padding: 2rem;
     max-width: 500px;
@@ -1175,7 +1384,7 @@
     align-items: center;
     gap: 12px;
     margin-bottom: 1.5rem;
-    color: #ff6b35;
+    color: var(--ember);
 }
 
 .compression-modal-header h3 {
@@ -1194,7 +1403,7 @@
     right: 1rem;
     background: none;
     border: none;
-    color: #ccc;
+    color: var(--text-body);
     font-size: 1.5rem;
     cursor: pointer;
     padding: 0.5rem;
@@ -1209,7 +1418,7 @@
 
 .compression-modal-close:hover {
     background: rgba(255, 107, 53, 0.2);
-    color: #ff6b35;
+    color: var(--ember);
 }
 
 .compression-section {
@@ -1217,13 +1426,13 @@
 }
 
 .compression-section h4 {
-    color: #ff6b35;
+    color: var(--ember);
     margin-bottom: 0.5rem;
     font-size: 1.1rem;
 }
 
 .compression-section p {
-    color: #ccc;
+    color: var(--text-body);
     line-height: 1.5;
     margin-bottom: 0.75rem;
 }
@@ -1238,13 +1447,22 @@
     padding: 0.75rem;
     margin-bottom: 0.5rem;
     border-radius: 10px;
-    border-left: 3px solid #ff6b35;
+    border-left: 3px solid var(--ember);
     color: #e0e0e0;
     font-size: 0.9rem;
 }
 
 .compression-tips li strong {
-    color: #ff6b35;
+    color: var(--ember);
+}
+
+/* Aside under the video tips: what the server does for you, so nobody
+   re-encodes by hand for no reason. */
+.compression-note {
+    margin: 0.75rem 0 0;
+    color: #b8b8b8;
+    font-size: 0.85rem;
+    line-height: 1.5;
 }
 
 .tool-links {
@@ -1257,8 +1475,8 @@
 .tool-link {
     display: inline-block;
     padding: 6px 12px;
-    background: linear-gradient(45deg, #ff6b35, #f7931e);
-    color: white;
+    background: var(--ember-gradient);
+    color: var(--on-accent);
     text-decoration: none;
     border-radius: 15px;
     font-size: 0.8rem;
@@ -1269,17 +1487,17 @@
 .tool-link:hover {
     transform: translateY(-2px);
     box-shadow: 0 5px 15px rgba(255, 107, 53, 0.3);
-    color: white;
+    color: var(--on-accent);
     text-decoration: none;
 }
 
 .file-size-large {
-    color: #ffc107;
+    color: var(--warn);
     font-weight: 600;
 }
 
 .file-size-huge {
-    color: #dc3545;
+    color: var(--danger);
     font-weight: 600;
 }
 
@@ -1292,39 +1510,51 @@
     pointer-events: none;
 }
 
+/* Dark surface with a semantic edge, rather than white text on a saturated
+   fill — the old success/error gradients sat at ~3:1 against white. This also
+   gives `warning` somewhere to live; it was being requested by
+   showNotification() but had no rule at all, so it rendered as bare text. */
 .notification {
-    padding: 1rem 1.5rem;
+    max-width: 22rem;
+    padding: 0.85rem 1.15rem;
     margin-bottom: 10px;
-    border-radius: 25px;
-    color: white;
+    border-radius: 12px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--text-dim);
+    color: var(--text-body);
     font-weight: 600;
-    transform: translateX(400px);
+    font-size: 0.9rem;
+    transform: translateX(calc(100% + 2rem));
     transition: transform 0.3s ease;
     pointer-events: auto;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 10px;
-    backdrop-filter: blur(10px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
 .notification.show {
     transform: translateX(0);
 }
 
-.notification.success {
-    background: linear-gradient(45deg, rgba(40, 167, 69, 0.9), rgba(32, 201, 151, 0.9));
-    border: 2px solid #28a745;
+.notification-icon {
+    flex-shrink: 0;
+    font-weight: 700;
+    line-height: 1.5;
 }
 
-.notification.error {
-    background: linear-gradient(45deg, rgba(220, 53, 69, 0.9), rgba(200, 35, 51, 0.9));
-    border: 2px solid #dc3545;
-}
+.notification.success { border-left-color: var(--ok); }
+.notification.success .notification-icon { color: var(--ok); }
 
-.notification.info {
-    background: linear-gradient(45deg, rgba(0, 123, 255, 0.9), rgba(108, 117, 125, 0.9));
-    border: 2px solid #007bff;
-}
+.notification.error { border-left-color: var(--danger); }
+.notification.error .notification-icon { color: var(--danger); }
+
+.notification.warning { border-left-color: var(--warn); }
+.notification.warning .notification-icon { color: var(--warn); }
+
+.notification.info { border-left-color: var(--info); }
+.notification.info .notification-icon { color: var(--info); }
 
 /* Responsive Design */
 @media (max-width: 1024px) {
@@ -1337,7 +1567,7 @@
         height: auto;
         position: static;
         border-right: none;
-        border-bottom: 2px solid #333;
+        border-bottom: 2px solid var(--rule);
     }
     
     .gallery-main {
@@ -1363,8 +1593,8 @@
     }
     
     .gallery-grid {
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 16px;
+        --row-h: 150px;
+        gap: 16px 10px;
     }
     
     .gallery-controls {
@@ -1405,8 +1635,8 @@
     /* Better touch support for modal navigation */
     .modal-nav {
         background: rgba(0, 0, 0, 0.8);
-        border: 3px solid #ff6b35;
-        color: #ff6b35;
+        border: 3px solid var(--ember);
+        color: var(--ember);
         touch-action: manipulation;
         -webkit-tap-highlight-color: transparent;
     }
@@ -1414,11 +1644,6 @@
     .modal-nav:active {
         background: rgba(255, 107, 53, 0.9);
         transform: translateY(-50%) scale(0.9);
-    }
-    
-    /* Hide keyboard hints on mobile */
-    .modal-nav[data-key]::after {
-        display: none;
     }
     
     /* Ensure compression modal is properly sized on mobile */

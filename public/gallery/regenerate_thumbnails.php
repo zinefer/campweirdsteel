@@ -32,7 +32,15 @@ if (php_sapi_name() === 'cli') {
     // Require authentication
     $auth = new GalleryAuth();
     $auth->requireAuth();
-    
+
+    // Rebuilding every thumbnail for a year is expensive, and this bypasses
+    // the API (which is admin-gated for the same action), so gate it here too.
+    if (!$auth->isAdmin()) {
+        http_response_code(403);
+        echo '<p>Regenerating thumbnails is limited to admins.</p>';
+        exit;
+    }
+
     $year = isset($_GET['year']) ? (int)$_GET['year'] : 0;
     $confirm = isset($_GET['confirm']) && $_GET['confirm'] === 'yes';
 }

@@ -149,28 +149,13 @@ class ImprovedSlideshow {
     }
     
     /**
-     * Attempt to autoplay video with graceful fallbacks
+     * Autoplay the current video. With sound where the browser allows it; see
+     * Gallery.playVideo().
      */
     async attemptVideoAutoplay(video) {
-        try {
-            // First try unmuted autoplay
-            video.muted = false;
-            await video.play();
-            console.log('Video autoplay successful (unmuted)');
-        } catch (error) {
-            try {
-                // Fallback to muted autoplay
-                console.log('Unmuted autoplay failed, trying muted');
-                video.muted = true;
-                await video.play();
-                console.log('Video autoplay successful (muted)');
-            } catch (mutedError) {
-                // If both fail, show controls and let user play manually
-                console.log('All autoplay attempts failed');
-                video.controls = true;
-                video.muted = false; // Reset to unmuted for manual play
-            }
-        }
+        // The viewer has usually started it already; don't restart it.
+        if (!video.paused) return;
+        await this.gallery.playVideo(video);
     }
     
     /**
@@ -227,62 +212,161 @@ class ImprovedSlideshow {
         }
         
         if (slideshowIndicator) {
-            slideshowIndicator.style.display = isActive ? 'block' : 'none';
+            slideshowIndicator.hidden = !isActive;
         }
     }
 }
 
 class Gallery {
+    static SORT_MODES = ['custom', 'newest', 'oldest', 'name'];
+    static DEFAULT_SORT = 'oldest';
+    static SORT_STORAGE_KEY = 'cws.gallery.sortMode';
+    static DETAILS_STORAGE_KEY = 'cws.gallery.showDetails';
+
     constructor() {
-        this.currentYear = new Date().getFullYear();
+        this.currentYear = null; // resolved from the server's year list in init()
+        this.uploadYear = new Date().getFullYear();
         this.files = [];
         this.displayedFiles = []; // this.files sorted per the active sortMode; drives modal/slideshow navigation
+        this.yearSummaries = [];
         this.selectedFile = null;
         this.currentFileIndex = 0;
         this.currentUserId = window.GALLERY_CONFIG?.currentUserId || 0;
         this.isAdmin = window.GALLERY_CONFIG?.isAdmin || false;
         this.users = []; // For admin upload on behalf functionality
         this.isReordering = false; // Prevent concurrent reorder operations
-        
+
         // Upload queue management
         this.uploadQueue = [];
         this.isUploading = false;
-        this.maxFileSize = 50 * 1024 * 1024; // 50MB in bytes
-        
+        // Video gets a bigger allowance than stills because it is sliced into
+        // chunks on the way up and re-encoded on the way in, so neither the
+        // request size nor the stored size is what the camera produced.
+        // These have to agree with MAX_FILE_SIZE / MAX_VIDEO_SIZE in
+        // includes/gallery/config.php, which is what actually enforces them.
+        this.maxImageSize = 50 * 1024 * 1024;   // 50MB
+        this.maxVideoSize = 500 * 1024 * 1024;  // 500MB
+        this.chunkSize = 5 * 1024 * 1024;       // 5MB, re-confirmed by upload_init
+        this.chunkRetries = 3;
+
+        // Videos still being re-encoded are polled for until they are ready
+        this.processingPoll = null;
+
         // Store references to event handlers for proper cleanup
         this.dragHandlers = null;
-        
+
         // Initialize improved slideshow
         this.slideshow = new ImprovedSlideshow(this);
-        
-        this.viewMode = 'grid';
-        this.sortMode = 'custom'; // Default to custom ordering
-        
+
+        // Rearranging is an explicit mode, not the default sort. Dragging used
+        // to be live the moment the page loaded, which made it very easy to
+        // rearrange the whole camp's archive while trying to scroll it.
+        this.rearranging = false;
+        // Oldest first is the default view: the archive reads as the week did.
+        // Whatever is picked instead is remembered, so a reload doesn't throw
+        // the choice away.
+        this.sortMode = this.loadSortMode();
+
+        // Uploader / size / date under each tile. Off by default so the grid
+        // is just the pictures; remembered like the sort.
+        this.showDetails = this.loadShowDetails();
+
+        // Where a hover preview had got to, so opening the video picks up
+        // from the same frame instead of jumping back to the start.
+        this.resumeAt = 0;
+
+        // Element that had focus before the modal opened, so it can be restored
+        this.modalReturnFocus = null;
+
+        this.trackNavHeight();
         this.init();
     }
-    
+
+    /**
+     * Publish the fixed nav's real height as --nav-h. The layout's top padding
+     * and the sticky sidebar hang off it; a hard-coded 70px left a gap under
+     * the nav, and a different one on mobile, where the nav is shorter.
+     */
+    trackNavHeight() {
+        const nav = document.getElementById('navbar');
+        if (!nav) return;
+
+        const set = () => document.documentElement.style.setProperty(
+            '--nav-h', `${nav.getBoundingClientRect().height}px`
+        );
+        set();
+        if ('ResizeObserver' in window) {
+            new ResizeObserver(set).observe(nav);
+        }
+    }
+
+    loadShowDetails() {
+        try {
+            return localStorage.getItem(Gallery.DETAILS_STORAGE_KEY) === '1';
+        } catch (e) { /* storage unavailable */ }
+        return false;
+    }
+
+    saveShowDetails(show) {
+        try {
+            localStorage.setItem(Gallery.DETAILS_STORAGE_KEY, show ? '1' : '0');
+        } catch (e) { /* storage unavailable */ }
+    }
+
+    /**
+     * Play a video with sound. A click or key press that got us here counts
+     * as permission, so this normally just works; when the browser still
+     * refuses (e.g. a slideshow left running), fall back to playing muted
+     * rather than not at all. The controls are there to unmute.
+     */
+    async playVideo(video) {
+        video.muted = false;
+        try {
+            await video.play();
+        } catch (error) {
+            if (error.name !== 'NotAllowedError') return;
+            video.muted = true;
+            try {
+                await video.play();
+            } catch (e) { /* leave it paused; the controls still work */ }
+        }
+    }
+
     async init() {
         await this.loadYears();
+
+        // Open on the newest year that actually has photos in it. Defaulting
+        // to the calendar year meant that from January until the first upload
+        // of the next burn, the gallery opened empty — and the year list now
+        // always carries the current year so uploads stay reachable, so
+        // "newest in the list" would have the same problem.
+        const populated = this.yearSummaries.find(s => s.count > 0);
+        this.currentYear = (populated || this.yearSummaries[0])?.year ?? this.uploadYear;
+
         await this.loadFiles(this.currentYear);
         this.setupEventListeners();
-        
+
         // Load users for admin upload on behalf functionality
         if (this.isAdmin) {
             await this.loadUsers();
             this.setupUploadOnBehalf();
         }
     }
-    
+
     async loadYears() {
         try {
+            // One cheap request. This used to fan out into a full `files`
+            // request per year — each of which ran an EXIF read per image and
+            // an ffmpeg call per video — purely to print counts in the sidebar.
             const response = await fetch('api.php?action=years');
             const data = await response.json();
-            
+
             if (data.error) {
                 throw new Error(data.error);
             }
-            
-            await this.renderYearsList(data.years);
+
+            this.yearSummaries = data.summaries || [];
+            this.renderYearsList(this.yearSummaries);
         } catch (error) {
             this.showNotification('Failed to load years: ' + error.message, 'error');
         }
@@ -311,7 +395,7 @@ class Gallery {
         if (!container || !select) return;
         
         // Show the container for admins
-        container.style.display = 'block';
+        container.hidden = false;
         
         // Populate the select with users
         select.innerHTML = '';
@@ -339,62 +423,27 @@ class Gallery {
         });
     }
     
-    async renderYearsList(years) {
+    renderYearsList(summaries) {
         const yearsList = document.getElementById('yearsList');
-        
-        if (years.length === 0) {
-            yearsList.innerHTML = `
-                <div style="text-align: center; color: #666; padding: 2rem;">
-                    <p>No gallery years found</p>
-                </div>
-            `;
+        if (!yearsList) return;
+
+        if (summaries.length === 0) {
+            yearsList.innerHTML = '<p class="years-empty">No years yet. The first upload creates one.</p>';
             return;
         }
-        
-        // Get file counts for each year
-        const yearItems = await Promise.all(years.map(async (year) => {
-            try {
-                const response = await fetch(`api.php?action=files&year=${year}`);
-                const data = await response.json();
-                const files = data.files || [];
-                
-                const totalCount = files.length;
-                const imageCount = files.filter(f => f.type === 'image').length;
-                const videoCount = files.filter(f => f.type === 'video').length;
-                const totalSize = files.reduce((sum, f) => sum + f.size, 0);
-                
-                return {
-                    year,
-                    totalCount,
-                    imageCount,
-                    videoCount,
-                    totalSize: this.formatFileSize(totalSize)
-                };
-            } catch (error) {
-                return {
-                    year,
-                    totalCount: 0,
-                    imageCount: 0,
-                    videoCount: 0,
-                    totalSize: '0 B'
-                };
-            }
-        }));
-        
-        yearsList.innerHTML = yearItems.map(item => `
-            <div class="year-item ${item.year === this.currentYear ? 'active' : ''}" 
-                 data-year="${item.year}">
-                <div class="year-number">${item.year}</div>
-                <div class="year-stats">
-                    <div class="year-count">${item.totalCount} files</div>
-                    <div class="year-size">${item.totalSize}</div>
-                    ${item.totalCount > 0 ? `
-                        <div style="font-size: 0.7rem; opacity: 0.8;">
-                            ${item.imageCount}📷 ${item.videoCount}🎥
-                        </div>
-                    ` : ''}
-                </div>
-            </div>
+
+        // Buttons, not divs: these were unreachable by keyboard.
+        yearsList.innerHTML = summaries.map(item => `
+            <button type="button" class="year-item ${item.year === this.currentYear ? 'active' : ''}"
+                    data-year="${item.year}"
+                    aria-current="${item.year === this.currentYear ? 'true' : 'false'}">
+                <span class="year-number">${item.year}</span>
+                <span class="year-stats">
+                    <span class="year-count">${item.count} ${item.count === 1 ? 'file' : 'files'}</span>
+                    <span class="year-size">${this.formatFileSize(item.bytes)}</span>
+                    ${item.count > 0 ? `<span class="year-mix">${item.images} photo${item.images === 1 ? '' : 's'}, ${item.videos} video${item.videos === 1 ? '' : 's'}</span>` : ''}
+                </span>
+            </button>
         `).join('');
     }
     
@@ -412,39 +461,90 @@ class Gallery {
             this.files = data.files;
             this.currentYear = year;
             this.currentFileIndex = 0;
-            
-            this.updateCurrentYearInfo();
+
             this.updateYearButtons();
             this.renderGallery();
             this.updateGalleryTitle();
-            
+            this.syncProcessingPoll();
+
         } catch (error) {
             this.showNotification('Failed to load files: ' + error.message, 'error');
             this.hideLoading();
         }
     }
-    
-    updateCurrentYearInfo() {
-        const currentYearEl = document.getElementById('currentYear');
-        const currentYearStatsEl = document.getElementById('currentYearStats');
-        
-        if (currentYearEl) {
-            currentYearEl.textContent = this.currentYear;
+
+    /**
+     * Keep an eye on videos that are still being re-encoded.
+     *
+     * The transcode happens in a detached process with nothing to push from,
+     * so the only way the tile ever stops saying "Converting" is if we ask
+     * again. Polls only while something is actually outstanding, and stops as
+     * soon as the last one lands.
+     */
+    syncProcessingPoll() {
+        const stillWorking = this.files.some(file => file.processing);
+
+        if (!stillWorking) {
+            if (this.processingPoll) {
+                clearInterval(this.processingPoll);
+                this.processingPoll = null;
+            }
+            return;
         }
-        
-        if (currentYearStatsEl) {
-            const imageCount = this.files.filter(f => f.type === 'image').length;
-            const videoCount = this.files.filter(f => f.type === 'video').length;
-            const totalSize = this.files.reduce((sum, f) => sum + f.size, 0);
-            
-            currentYearStatsEl.innerHTML = `
-                <div>${this.files.length} files total</div>
-                <div>${imageCount} images, ${videoCount} videos</div>
-                <div>Total: ${this.formatFileSize(totalSize)}</div>
-            `;
+
+        if (this.processingPoll) return; // Already watching
+
+        this.processingPoll = setInterval(() => {
+            // A backgrounded tab does not need to keep asking; it will
+            // refresh when it comes back into view.
+            if (document.hidden) return;
+            this.refreshFilesQuietly();
+        }, 5000);
+    }
+
+    /**
+     * Re-read the current year without the loading spinner.
+     *
+     * loadFiles() tears the grid down and rebuilds it, which is right for a
+     * year change and very wrong every five seconds — the page would flicker
+     * and lose the user's scroll position while a video encodes.
+     */
+    async refreshFilesQuietly() {
+        try {
+            const response = await fetch(`api.php?action=files&year=${this.currentYear}`);
+            const data = await response.json();
+            if (data.error) return;
+
+            const wasProcessing = new Set(this.files.filter(f => f.processing).map(f => f.filename));
+            const priorNames = new Set(this.files.map(f => f.filename));
+            this.files = data.files;
+
+            // Compare the sets, not their sizes. A transcode renames .mov to
+            // .mp4, so if one video finished while another started converting
+            // the counts would match while every tile for the finished file
+            // still pointed at a filename that no longer exists.
+            const stillProcessing = new Set(this.files.filter(f => f.processing).map(f => f.filename));
+            const finished = [...wasProcessing].filter(name => !stillProcessing.has(name));
+            const renamed = this.files.some(f => !priorNames.has(f.filename));
+
+            if (finished.length > 0 || renamed || stillProcessing.size !== wasProcessing.size) {
+                this.renderGallery();
+            }
+
+            if (finished.length > 0) {
+                this.showNotification(
+                    `${finished.length} video${finished.length === 1 ? ' is' : 's are'} ready to watch`,
+                    'success'
+                );
+            }
+
+            this.syncProcessingPoll();
+        } catch (error) {
+            // A failed poll is not worth bothering anyone about; the next one
+            // will pick it up.
         }
     }
-    
+
     updateGalleryTitle() {
         const titleEl = document.getElementById('galleryYearTitle');
         if (titleEl) {
@@ -455,81 +555,131 @@ class Gallery {
     renderGallery() {
         const grid = document.getElementById('galleryGrid');
         const loading = document.querySelector('.loading');
-        
+
         if (loading) {
             loading.remove();
         }
-        
+
         if (this.files.length === 0) {
+            this.displayedFiles = [];
             grid.innerHTML = `
-                <div class="empty-gallery" style="grid-column: 1 / -1;">
-                    <h3>No memories yet for ${this.escapeHtml(this.currentYear.toString())}</h3>
-                    <p>Be the first to upload photos or videos from your playa adventures!</p>
-                    <p style="margin-top: 1rem; font-size: 0.9rem; opacity: 0.8;">
-                        Share your art, camps, sunrises, and all the magical moments that make Burning Man special.
-                    </p>
+                <div class="empty-gallery">
+                    <h3>Nothing here yet for ${this.escapeHtml(String(this.currentYear))}</h3>
+                    <p>Photos and videos you upload show up here for the rest of camp.</p>
+                    <p class="empty-gallery-note">Anything from the playa works — art, builds, sunrises, the walk back at 6am.</p>
                 </div>
             `;
             return;
         }
-        
-        // Apply sorting
+
+        // Apply sorting. Keep track of the order actually rendered so the modal
+        // and slideshow navigate in the order the person sees.
         const sortedFiles = this.sortFiles([...this.files]);
-        // Keep track of the order actually rendered so the modal/slideshow can
-        // navigate through images in the order the user sees them
         this.displayedFiles = sortedFiles;
 
         grid.innerHTML = sortedFiles.map((file, index) => {
-            // Find original index by filename to avoid issues with object references after sorting
-            const originalIndex = this.files.findIndex(f => f.filename === file.filename);
+            // A video mid-transcode is about to change name and content, so
+            // it can be looked at but not opened, dragged or deleted — every
+            // one of those would race the worker rewriting the file.
+            const converting = !!file.processing;
+            const manageable = this.canManageFile(file) && !converting;
+            const draggable = this.rearranging && manageable;
+            const name = this.getDisplayName(file);
+            const openLabel = file.uploaderName
+                ? `Open ${name}, uploaded by ${file.uploaderName}`
+                : `Open ${name}`;
+
+            const caption = (this.showDetails || draggable) ? `
+                    <figcaption class="g-tile-cap">
+                        ${this.showDetails ? `<span class="g-tile-text">
+                            ${file.uploaderName ? `<span class="g-tile-by">${this.escapeHtml(file.uploaderName)}</span>` : ''}
+                            <span class="g-tile-meta">${this.escapeHtml(this.formatDate(file.modified))} · ${this.escapeHtml(this.formatFileSize(file.size))}</span>
+                        </span>` : ''}
+                        ${draggable ? `<span class="g-tile-actions">
+                            <button type="button" class="g-tile-grip" aria-label="${this.escapeHtml('Reorder ' + name)}" title="Drag to reorder">⋮⋮</button>
+                        </span>` : ''}
+                    </figcaption>` : '';
+
             return `
-            <div class="gallery-item ${this.sortMode === 'custom' ? 'draggable' : ''}" 
-                 data-filename="${this.escapeHtml(file.filename)}" 
-                 data-index="${index}"
-                 data-original-index="${originalIndex}"
-                 ${this.sortMode === 'custom' ? 'draggable="true"' : ''}>
-                <div class="gallery-item-content">
-                    ${this.renderFileContent(file)}
-                    ${file.type === 'video' ? '<div class="video-indicator">Video</div>' : ''}
-                    ${this.sortMode === 'custom' ? '<div class="drag-handle">⋮⋮</div>' : ''}
-                    <div class="gallery-item-overlay">
-                        <div class="gallery-item-info">
-                            <div class="file-meta">
-                                ${this.escapeHtml(this.formatFileSize(file.size))} • ${this.escapeHtml(this.formatDate(file.modified))}
-                                ${file.uploaderName ? ` • <span class="uploader-info">by ${this.escapeHtml(file.uploaderName)}</span>` : ''}
-                            </div>
-                        </div>
-                        <div class="gallery-item-actions">
-                            <button class="action-btn info-btn" data-filename="${this.escapeHtml(file.filename)}">
-                                View
-                            </button>
-                            ${this.canDeleteFile(file) ? `
-                                <button class="action-btn delete-btn" data-filename="${this.escapeHtml(file.filename)}">
-                                    Delete
-                                </button>
-                            ` : ''}
-                        </div>
-                    </div>
+            <figure class="g-tile${converting ? ' is-converting' : ''}"
+                    style="--ratio: ${this.aspectRatio(file)}"
+                    data-filename="${this.escapeHtml(file.filename)}"
+                    data-index="${index}"
+                    ${draggable ? 'draggable="true"' : ''}>
+                <div class="g-tile-inner">
+                    ${this.rearranging ? `<span class="g-tile-pos" aria-hidden="true">${index + 1}</span>` : ''}
+                    ${converting ? `
+                    <div class="g-tile-open is-converting-body" aria-label="${this.escapeHtml(name + ' is being converted')}">
+                        <span class="g-tile-noposter" aria-hidden="true"></span>
+                        <span class="g-tile-badge">Converting…</span>
+                    </div>` : `
+                    <button type="button"
+                            class="g-tile-open${file.type === 'video' ? ' is-video' : ''}"
+                            data-index="${index}"
+                            aria-label="${this.escapeHtml(openLabel)}">
+                        ${this.renderFileContent(file)}
+                        ${file.type === 'video' ? '<span class="g-tile-badge">Video</span>' : ''}
+                    </button>`}
+                    ${caption}
                 </div>
-            </div>
-        `;
+            </figure>`;
         }).join('');
-        
-        // Setup drag and drop for custom ordering
-        if (this.sortMode === 'custom') {
+
+        if (this.rearranging) {
             this.setupDragAndDrop();
         }
     }
-    
+
     /**
-     * Escape HTML to prevent XSS
+     * Width/height ratio for a tile, so photos keep the shape they were shot
+     * in. Everything used to be force-cropped to a square by
+     * `aspect-ratio: 1` + `object-fit: cover`.
      */
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+    aspectRatio(file) {
+        const w = Number(file.width);
+        const h = Number(file.height);
+        if (w > 0 && h > 0) {
+            // Clamp the extremes so one panorama can't hog a whole row, or
+            // one tall screenshot shrink to a sliver.
+            return Math.min(3, Math.max(0.4, w / h)).toFixed(4);
+        }
+        return '1.5'; // 3:2 — the commonest photo shape, and a better guess than a square
     }
     
+    /**
+     * Escape for interpolation into markup, including inside quoted
+     * attributes. The previous textContent/innerHTML round-trip left quotes
+     * untouched, which is unsafe for the aria-label and title attributes this
+     * is used in.
+     */
+    escapeHtml(text) {
+        return String(text ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+    
+    /**
+     * The sort is a per-person view preference, so it lives in localStorage
+     * rather than on the server. Storage can be unavailable (private windows,
+     * cookies blocked), in which case the default just applies every time.
+     */
+    loadSortMode() {
+        try {
+            const saved = localStorage.getItem(Gallery.SORT_STORAGE_KEY);
+            if (saved && Gallery.SORT_MODES.includes(saved)) return saved;
+        } catch (e) { /* storage unavailable */ }
+        return Gallery.DEFAULT_SORT;
+    }
+
+    saveSortMode(mode) {
+        try {
+            localStorage.setItem(Gallery.SORT_STORAGE_KEY, mode);
+        } catch (e) { /* storage unavailable */ }
+    }
+
     sortFiles(files) {
         // Files are already ordered by their fractional index from the server
         // We can still allow different sort modes for display
@@ -547,67 +697,41 @@ class Gallery {
         }
     }
     
+    /**
+     * The media inside a tile.
+     *
+     * Videos render as their poster image only — no <video> element in the
+     * grid at all. The grid used to build a <video> per tile (plus a
+     * canvas-drawn poster when none existed) and load the source in place on
+     * click, which competed with the click that opens the viewer. The viewer
+     * is where video plays; the grid just shows a frame.
+     *
+     * alt is empty by design: the button wrapping this carries the accessible
+     * name, so a description here would be announced twice.
+     */
     renderFileContent(file) {
-        if (file.type === 'image') {
-            const src = file.thumbnail || file.url;
-            const img = document.createElement('img');
-            img.src = src;
-            img.alt = 'Gallery image';
-            img.loading = 'lazy';
-            return img.outerHTML;
-        } else {
-            // For videos, use a poster image approach to avoid downloading video data
-            const video = document.createElement('video');
-            video.preload = 'none'; // Changed from 'metadata' to 'none'
-            video.muted = true;
-            video.controls = false; // Remove controls from grid view
-            
-            // Use poster image if available
-            if (file.poster) {
-                video.poster = file.poster;
-            } else {
-                // Create a placeholder poster using canvas
-                const canvas = document.createElement('canvas');
-                canvas.width = 300;
-                canvas.height = 200;
-                const ctx = canvas.getContext('2d');
-                
-                // Draw gradient background
-                const gradient = ctx.createLinearGradient(0, 0, 300, 200);
-                gradient.addColorStop(0, '#1a1a1a');
-                gradient.addColorStop(1, '#333333');
-                ctx.fillStyle = gradient;
-                ctx.fillRect(0, 0, 300, 200);
-                
-                // Draw play button
-                ctx.fillStyle = '#ff6b35';
-                ctx.beginPath();
-                ctx.moveTo(120, 80);
-                ctx.lineTo(180, 100);
-                ctx.lineTo(120, 120);
-                ctx.closePath();
-                ctx.fill();
-                
-                // Add text
-                ctx.fillStyle = '#ffffff';
-                ctx.font = 'bold 14px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText('Click to load video', 150, 150);
-                
-                video.poster = canvas.toDataURL();
-            }
-            
-            // Set data attribute for lazy loading
-            video.setAttribute('data-video-src', file.url);
-            video.classList.add('video-placeholder');
-            
-            return video.outerHTML;
+        const src = file.type === 'image'
+            ? (file.thumbnail || file.url)
+            : file.poster;
+
+        if (!src) {
+            return '<span class="g-tile-noposter" aria-hidden="true"></span>';
         }
+
+        const img = document.createElement('img');
+        img.src = src;
+        img.alt = '';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        return img.outerHTML;
     }
-    
-    canDeleteFile(file) {
-        // Users can delete files they uploaded
-        return file.userId === this.currentUserId;
+
+    /**
+     * Whether the current user may delete or reorder this file. Owner or admin
+     * — the same rule the server enforces.
+     */
+    canManageFile(file) {
+        return this.isAdmin || file.userId === this.currentUserId;
     }
     
     getDisplayName(file) {
@@ -642,18 +766,233 @@ class Gallery {
             year: 'numeric'
         });
     }
+
+    /**
+     * The value a datetime-local input wants: local wall-clock time, no zone.
+     *
+     * toISOString() would be UTC, which is how an evening photo ends up
+     * offering to edit itself as the following morning.
+     */
+    formatDateTimeLocal(timestamp) {
+        const d = new Date(timestamp * 1000);
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+            + `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    /**
+     * The uploader / size / date line under the filename in the viewer.
+     *
+     * Split out from renderModalMedia() because the date editor puts it back
+     * afterwards, and the two must agree on what the line looks like.
+     */
+    renderModalMetadata(file) {
+        const modalMetadata = document.getElementById('modalMetadata');
+        if (!modalMetadata) return;
+
+        modalMetadata.innerHTML = '';
+
+        const parts = [
+            file.uploaderName ? `by ${file.uploaderName}` : null,
+            this.formatFileSize(file.size)
+        ].filter(Boolean);
+
+        if (parts.length) {
+            modalMetadata.appendChild(document.createTextNode(parts.join(' · ') + ' · '));
+        }
+
+        // Your own photo's date is a button; everyone else's is just text.
+        if (this.canManageFile(file) && !file.processing) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'modal-date-edit';
+            button.dataset.filename = file.filename;
+            button.textContent = this.formatDate(file.modified);
+            button.title = 'Change this date';
+            button.setAttribute('aria-label',
+                `Change the date on ${this.getDisplayName(file)}, currently ${this.formatDate(file.modified)}`);
+            modalMetadata.appendChild(button);
+        } else {
+            modalMetadata.appendChild(document.createTextNode(this.formatDate(file.modified)));
+        }
+    }
+
+    /**
+     * Swap the metadata line for a date picker.
+     *
+     * Inline rather than a second modal: this sits inside the viewer, which is
+     * already a dialog, and stacking one on another traps focus in the wrong
+     * place.
+     */
+    startDateEdit(file) {
+        const modalMetadata = document.getElementById('modalMetadata');
+        if (!modalMetadata) return;
+
+        // A slideshow advancing mid-edit would swap the file out from under
+        // the form and save the date onto whatever came next.
+        this.slideshow.stop();
+
+        modalMetadata.innerHTML = '';
+
+        const form = document.createElement('form');
+        form.className = 'modal-date-form';
+
+        const input = document.createElement('input');
+        input.type = 'datetime-local';
+        input.className = 'modal-date-input';
+        input.value = this.formatDateTimeLocal(file.modified);
+        input.setAttribute('aria-label', 'Date and time this was taken');
+
+        const save = document.createElement('button');
+        save.type = 'submit';
+        save.className = 'modal-date-save';
+        save.textContent = 'Save';
+
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'modal-date-cancel';
+        cancel.textContent = 'Cancel';
+
+        form.append(input, save, cancel);
+        modalMetadata.appendChild(form);
+        input.focus();
+
+        cancel.addEventListener('click', () => this.renderModalMetadata(file));
+
+        // Escape belongs to the editor while it is open, or it would close the
+        // whole viewer and leave the person wondering where their photo went.
+        form.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                this.renderModalMetadata(file);
+            }
+        });
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            if (!input.value) {
+                this.showNotification('Pick a date first', 'error');
+                return;
+            }
+
+            save.disabled = true;
+            const timestamp = Math.floor(new Date(input.value).getTime() / 1000);
+            await this.setFileDate(file, timestamp);
+        });
+    }
+
+    /**
+     * Write a new date and fold it back into what is on screen.
+     */
+    async setFileDate(file, timestamp) {
+        try {
+            const formData = new FormData();
+            formData.append('action', 'set_date');
+            formData.append('year', this.currentYear);
+            formData.append('filename', file.filename);
+            formData.append('timestamp', timestamp);
+
+            const response = await fetch('api.php', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await response.json();
+
+            if (data.error) {
+                throw new Error(data.error);
+            }
+
+            // Update in place rather than reloading: a reload would re-sort the
+            // grid and lose the viewer's position in it.
+            file.modified = data.modified;
+            const listed = this.files.find(f => f.filename === file.filename);
+            if (listed) listed.modified = data.modified;
+
+            this.renderModalMetadata(file);
+            this.renderGallery();
+
+            // Under a date sort the tile has just moved, and the viewer walks
+            // displayedFiles by index — without this, Next would jump to
+            // whatever slid into the old position.
+            const movedTo = this.displayedFiles.findIndex(f => f.filename === file.filename);
+            if (movedTo !== -1) {
+                this.currentFileIndex = movedTo;
+
+                const modalCounter = document.getElementById('modalCounter');
+                if (modalCounter) {
+                    modalCounter.textContent =
+                        `${this.currentFileIndex + 1} of ${this.displayedFiles.length}`;
+                }
+            }
+
+            this.showNotification('Date updated', 'success');
+
+        } catch (error) {
+            this.showNotification('Could not change the date: ' + error.message, 'error');
+            this.renderModalMetadata(file);
+        }
+    }
     
     updateYearButtons() {
         document.querySelectorAll('.year-item').forEach(item => {
-            item.classList.toggle('active', parseInt(item.dataset.year) === this.currentYear);
+            const isActive = parseInt(item.dataset.year, 10) === this.currentYear;
+            item.classList.toggle('active', isActive);
+            item.setAttribute('aria-current', isActive ? 'true' : 'false');
         });
-        
-        // Show/hide upload controls based on current year
-        const currentYear = new Date().getFullYear();
-        const uploadSection = document.querySelector('.upload-section');
-        if (uploadSection) {
-            uploadSection.style.display = this.currentYear === currentYear ? 'block' : 'none';
+
+        // Uploads are only open for the current calendar year. This used to
+        // `display: none` the whole section, so the controls silently vanished
+        // when you clicked a past year — which reads as a bug, not a rule.
+        // Now the section stays put and explains itself.
+        const canUpload = this.currentYear === this.uploadYear;
+        const uploadControls = document.querySelector('.upload-controls');
+        const uploadInfo = document.querySelector('.upload-info');
+        const uploadClosed = document.getElementById('uploadClosed');
+
+        if (uploadControls) uploadControls.hidden = !canUpload;
+        if (uploadInfo) uploadInfo.hidden = !canUpload;
+
+        if (uploadClosed) {
+            uploadClosed.hidden = canUpload;
+            uploadClosed.textContent =
+                `Uploads are open for ${this.uploadYear}. Switch to ${this.uploadYear} to add photos.`;
         }
+    }
+
+    /**
+     * Turn rearrange mode on or off. Reordering renames files on disk for
+     * everyone in camp, so it needs a deliberate switch rather than being
+     * live by default.
+     */
+    toggleRearrange() {
+        // The other sorts are views, not the saved order, so rearranging only
+        // means anything in camp order. Now that the gallery opens on oldest
+        // first, refusing the click and asking for a sort change would make
+        // this a two-step affair for everyone — switch on their behalf and
+        // say so instead. The stored sort preference is left alone.
+        if (!this.rearranging && this.sortMode !== 'custom') {
+            this.sortMode = 'custom';
+            const sortSelect = document.getElementById('sortSelect');
+            if (sortSelect) sortSelect.value = 'custom';
+            this.showNotification('Switched to camp order — that is the order you are editing.', 'info');
+        }
+
+        this.rearranging = !this.rearranging;
+
+        const toggle = document.getElementById('rearrangeToggle');
+        const hint = document.getElementById('rearrangeHint');
+        const grid = document.getElementById('galleryGrid');
+
+        if (toggle) {
+            toggle.setAttribute('aria-pressed', String(this.rearranging));
+            toggle.textContent = this.rearranging ? 'Done rearranging' : 'Rearrange';
+        }
+        if (hint) hint.hidden = !this.rearranging;
+        if (grid) grid.classList.toggle('is-rearranging', this.rearranging);
+
+        this.renderGallery();
     }
     
     setupEventListeners() {
@@ -737,44 +1076,93 @@ class Gallery {
                 this.startUpload();
             });
         }
-        
-        // Gallery item clicks (for modal)
-        const galleryGrid = document.getElementById('galleryGrid');
-        if (galleryGrid) {
-            galleryGrid.addEventListener('click', (e) => {
-                const item = e.target.closest('.gallery-item');
-                if (item && !e.target.closest('.gallery-item-actions')) {
-                    const index = parseInt(item.dataset.index);
-                    this.openModal(index);
+
+        // Upload queue actions. Delegated rather than inline onclick, which
+        // required a `gallery` global and interpolated values into attributes.
+        const selectedFiles = document.getElementById('selectedFiles');
+        if (selectedFiles) {
+            selectedFiles.addEventListener('click', (e) => {
+                const remove = e.target.closest('[data-remove-id]');
+                if (remove) {
+                    this.removeFromQueue(Number(remove.dataset.removeId));
+                    return;
                 }
-                
-                // Handle video placeholder clicks
-                const videoPlaceholder = e.target.closest('.video-placeholder');
-                if (videoPlaceholder && !e.target.closest('.gallery-item-actions')) {
-                    e.stopPropagation();
-                    this.loadVideoOnDemand(videoPlaceholder);
-                }
-            });
-            
-            // Action buttons
-            galleryGrid.addEventListener('click', (e) => {
-                if (e.target.classList.contains('delete-btn')) {
-                    e.stopPropagation();
-                    this.deleteFile(e.target.dataset.filename);
-                } else if (e.target.classList.contains('info-btn')) {
-                    e.stopPropagation();
-                    const item = e.target.closest('.gallery-item');
-                    const index = parseInt(item.dataset.index);
-                    this.openModal(index);
+
+                const help = e.target.closest('[data-compression-help]');
+                if (help) {
+                    this.showCompressionHelp(help.dataset.compressionHelp);
                 }
             });
         }
         
+        // Grid interactions. The tile only opens; delete is in the viewer.
+        const galleryGrid = document.getElementById('galleryGrid');
+        if (galleryGrid) {
+            galleryGrid.addEventListener('click', (e) => {
+                const open = e.target.closest('.g-tile-open');
+                if (open) {
+                    const preview = open.querySelector('.g-tile-preview');
+                    this.resumeAt = preview?.currentTime || 0;
+                    this.stopPreview(open);
+                    this.openModal(parseInt(open.dataset.index, 10), open);
+                }
+            });
+
+            this.setupHoverPreview(galleryGrid);
+        }
+
+        // Details toggle
+        const detailsToggle = document.getElementById('detailsToggle');
+        if (detailsToggle) {
+            detailsToggle.setAttribute('aria-pressed', String(this.showDetails));
+            detailsToggle.addEventListener('click', () => {
+                this.showDetails = !this.showDetails;
+                detailsToggle.setAttribute('aria-pressed', String(this.showDetails));
+                this.saveShowDetails(this.showDetails);
+                this.renderGallery();
+            });
+        }
+
+        // Delete, from the viewer
+        const modalDelete = document.getElementById('modalDelete');
+        if (modalDelete) {
+            modalDelete.addEventListener('click', () => {
+                const file = this.displayedFiles[this.currentFileIndex];
+                if (file) this.deleteFile(file.filename);
+            });
+        }
+
+        // Rearrange toggle
+        const rearrangeToggle = document.getElementById('rearrangeToggle');
+        if (rearrangeToggle) {
+            rearrangeToggle.addEventListener('click', () => this.toggleRearrange());
+        }
+
         // Sort select
         const sortSelect = document.getElementById('sortSelect');
         if (sortSelect) {
+            // The markup ships the default selected; a remembered choice wins.
+            sortSelect.value = this.sortMode;
+
             sortSelect.addEventListener('change', (e) => {
                 this.sortMode = e.target.value;
+                this.saveSortMode(this.sortMode);
+
+                // The other sorts are views. Leaving camp order while
+                // rearranging would let a drop write an order derived from a
+                // sequence nobody is actually storing.
+                if (this.sortMode !== 'custom' && this.rearranging) {
+                    this.rearranging = false;
+                    const toggle = document.getElementById('rearrangeToggle');
+                    const hint = document.getElementById('rearrangeHint');
+                    if (toggle) {
+                        toggle.setAttribute('aria-pressed', 'false');
+                        toggle.textContent = 'Rearrange';
+                    }
+                    if (hint) hint.hidden = true;
+                    galleryGrid?.classList.remove('is-rearranging');
+                }
+
                 this.renderGallery();
             });
         }
@@ -787,7 +1175,22 @@ class Gallery {
         
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
-            if (document.getElementById('galleryModal')?.classList.contains('show')) {
+            const modal = document.getElementById('galleryModal');
+
+            if (modal?.classList.contains('show')) {
+                if (e.key === 'Tab') {
+                    this.trapFocus(e, modal);
+                    return;
+                }
+
+                // The date editor owns its own keys. A datetime-local input
+                // steps its fields with the arrows, which the viewer otherwise
+                // claims for navigation, and Escape there means "stop editing"
+                // rather than "close the viewer" — the form handles that one.
+                if (e.target.closest?.('.modal-date-form')) {
+                    return;
+                }
+
                 switch (e.key) {
                     case 'Escape':
                         this.closeModal();
@@ -800,25 +1203,107 @@ class Gallery {
                         e.preventDefault();
                         this.nextImage();
                         break;
+                    // Space only. 'S' was a second binding for the same action,
+                    // and neither was surfaced anywhere; the viewer now shows
+                    // the shortcut on the button itself.
                     case ' ':
-                    case 'Spacebar':
-                        e.preventDefault();
-                        this.toggleSlideshow();
-                        break;
-                    case 's':
-                    case 'S':
+                        // Let Space reach the video's own play/pause control.
+                        if (e.target.tagName === 'VIDEO' || e.target.tagName === 'BUTTON') break;
                         e.preventDefault();
                         this.toggleSlideshow();
                         break;
                 }
             }
-            
-            if (document.getElementById('compressionModal')?.classList.contains('show')) {
-                if (e.key === 'Escape') {
+
+            const compression = document.getElementById('compressionModal');
+            if (compression?.classList.contains('show')) {
+                if (e.key === 'Tab') {
+                    this.trapFocus(e, compression);
+                } else if (e.key === 'Escape') {
                     this.closeCompressionModal();
                 }
             }
         });
+    }
+
+    /**
+     * Play a video tile in place while the pointer rests on it.
+     *
+     * Only for a real mouse: on touch there is no hover, and the tap goes
+     * straight to the viewer. The <video> is created on hover and removed on
+     * leave, so the grid still loads nothing but posters up front. A short
+     * delay stops a pointer sweeping across the grid from starting a download
+     * for every video it crosses.
+     */
+    setupHoverPreview(grid) {
+        const canHover = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+        const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (!canHover || reducedMotion) return;
+
+        grid.addEventListener('pointerover', (e) => {
+            const open = e.target.closest('.g-tile-open.is-video');
+            if (!open || open.contains(e.relatedTarget) || this.rearranging) return;
+
+            clearTimeout(this.previewTimer);
+            this.previewTimer = setTimeout(() => {
+                const file = this.displayedFiles[Number(open.dataset.index)];
+                if (!file || !open.isConnected || open.querySelector('.g-tile-preview')) return;
+
+                const video = document.createElement('video');
+                video.className = 'g-tile-preview';
+                video.src = file.url;
+                video.muted = true; // required: hover is not permission for sound
+                video.loop = true;
+                video.playsInline = true;
+                video.setAttribute('aria-hidden', 'true');
+                video.addEventListener('playing', () => open.classList.add('is-previewing'), { once: true });
+                open.appendChild(video);
+                video.play().catch(() => this.stopPreview(open));
+            }, 150);
+        });
+
+        grid.addEventListener('pointerout', (e) => {
+            const open = e.target.closest('.g-tile-open.is-video');
+            if (!open || open.contains(e.relatedTarget)) return;
+            this.stopPreview(open);
+        });
+    }
+
+    stopPreview(open) {
+        clearTimeout(this.previewTimer);
+        const video = open?.querySelector('.g-tile-preview');
+        if (video) {
+            video.pause();
+            video.removeAttribute('src');
+            video.load(); // abort the download
+            video.remove();
+        }
+        open?.classList.remove('is-previewing');
+    }
+
+    /**
+     * Keep Tab inside an open dialog. Without this, tabbing out of the viewer
+     * walks through the page behind the overlay.
+     */
+    trapFocus(event, container) {
+        const focusable = container.querySelectorAll(
+            'button:not([disabled]):not([hidden]), [href], input, select, textarea, video[controls], [tabindex]:not([tabindex="-1"])'
+        );
+        // getClientRects() rather than offsetParent: the dialog is
+        // position: fixed, which makes offsetParent unreliable inside it.
+        const visible = Array.from(focusable).filter(el => el.getClientRects().length > 0);
+        if (visible.length === 0) return;
+
+        const first = visible[0];
+        const last = visible[visible.length - 1];
+
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
     }
     
     setupModalEventListeners() {
@@ -836,6 +1321,16 @@ class Gallery {
             }
         });
         
+        // The date in the metadata line is a button when the file is yours.
+        // Delegated, because renderModalMetadata() rebuilds that line on every
+        // navigation and a bound listener would go with it.
+        document.getElementById('modalMetadata')?.addEventListener('click', (e) => {
+            if (!e.target.closest('.modal-date-edit')) return;
+
+            const file = this.displayedFiles?.[this.currentFileIndex];
+            if (file) this.startDateEdit(file);
+        });
+
         // Navigation buttons
         document.getElementById('modalPrev').addEventListener('click', () => {
             this.previousImage();
@@ -977,22 +1472,35 @@ class Gallery {
             fileItem.error = 'File type not supported';
             return;
         }
-        
+
         // Check file size
-        if (file.size > this.maxFileSize) {
+        if (file.size > this.maxSizeFor(file)) {
             fileItem.status = 'error';
             fileItem.error = 'File too large';
             fileItem.showCompressionHelp = true;
             return;
         }
-        
-        // Warn for large files (over 20MB)
-        if (file.size > 20 * 1024 * 1024) {
+
+        // Videos are re-encoded server-side, so a big one is a slow upload
+        // rather than a problem — flag it as such instead of asking for a
+        // compression pass that the server is about to do anyway.
+        if (file.type.startsWith('video/') && file.size > 100 * 1024 * 1024) {
+            fileItem.status = 'warning';
+            fileItem.error = 'Large video - this will take a while';
+        } else if (file.type.startsWith('image/') && file.size > 20 * 1024 * 1024) {
             fileItem.status = 'warning';
             fileItem.error = 'Large file - consider compressing';
         } else {
             fileItem.status = 'ready';
         }
+    }
+
+    /**
+     * The size ceiling that applies to a given file, by kind.
+     */
+    maxSizeFor(file) {
+        const type = typeof file === 'string' ? file : file.type;
+        return type.startsWith('video/') ? this.maxVideoSize : this.maxImageSize;
     }
     
     /**
@@ -1012,15 +1520,15 @@ class Gallery {
                 <div class="file-info">
                     <div class="file-name" title="${this.escapeHtml(item.name)}">${this.escapeHtml(item.name)}</div>
                     <div class="file-meta">
-                        <span class="${this.getFileSizeClass(item.size)}">${this.formatFileSize(item.size)}</span>
+                        <span class="${this.getFileSizeClass(item)}">${this.formatFileSize(item.size)}</span>
                         <span>${this.getFileTypeDisplay(item.type)}</span>
                     </div>
                 </div>
-                <div class="file-status ${item.status}" ${item.showCompressionHelp ? `onclick="gallery.showCompressionHelp('${item.type}')"` : ''}>
-                    ${this.getStatusText(item)}
-                </div>
+                ${item.showCompressionHelp
+                    ? `<button type="button" class="file-status ${item.status}" data-compression-help="${this.escapeHtml(item.type)}">${this.escapeHtml(this.getStatusText(item))}</button>`
+                    : `<div class="file-status ${item.status}" title="${this.escapeHtml(this.getStatusText(item))}">${this.escapeHtml(this.getStatusText(item))}</div>`}
                 <div class="file-actions">
-                    <button class="file-remove" onclick="gallery.removeFromQueue(${item.id})" title="Remove">×</button>
+                    <button type="button" class="file-remove" data-remove-id="${item.id}" aria-label="${this.escapeHtml('Remove ' + item.name)}">×</button>
                 </div>
             </div>
         `).join('');
@@ -1029,9 +1537,10 @@ class Gallery {
     /**
      * Get file size class for styling
      */
-    getFileSizeClass(size) {
-        if (size > this.maxFileSize) return 'file-size-huge';
-        if (size > 20 * 1024 * 1024) return 'file-size-large';
+    getFileSizeClass(item) {
+        const isVideo = item.type.startsWith('video/');
+        if (item.size > this.maxSizeFor(item)) return 'file-size-huge';
+        if (item.size > (isVideo ? 100 : 20) * 1024 * 1024) return 'file-size-large';
         return '';
     }
     
@@ -1051,11 +1560,16 @@ class Gallery {
         switch (item.status) {
             case 'ready': return '✓ Ready';
             case 'warning': return '⚠ Large';
-            case 'error': 
+            case 'error':
                 if (item.showCompressionHelp) {
                     return '❌ Too Big (Help)';
                 }
-                return '❌ Error';
+                // Say what actually went wrong. uploadFiles() records the
+                // thrown message on item.error, and returning a bare "Error"
+                // here threw away the only report the user ever sees — the
+                // server's message ("Too many uploads are in progress", "PHP's
+                // upload_max_filesize...", a failed chunk) never reached them.
+                return item.error ? `❌ ${item.error}` : '❌ Error';
             case 'uploading': return '⏳ Uploading';
             case 'success': return '✅ Done';
             default: return item.error || 'Unknown';
@@ -1120,36 +1634,53 @@ class Gallery {
         
         let successCount = 0;
         let errorCount = 0;
-        
+        let processingCount = 0;
+
         for (let i = 0; i < validFiles.length; i++) {
             const fileItem = validFiles[i];
             this.updateProgressCount(i + 1, validFiles.length);
-            
+
             try {
                 fileItem.status = 'uploading';
                 this.renderUploadQueue();
-                
-                await this.uploadSingleFile(fileItem);
+
+                // Chunking gives real progress inside a single file, which
+                // matters now that one of them can be 500MB. The bar advances
+                // across the whole batch, so a file's own progress is scaled
+                // into its slice of it.
+                const result = await this.uploadSingleFile(fileItem, fraction => {
+                    this.updateProgressBar((i + fraction) / validFiles.length * 100);
+                });
+
                 fileItem.status = 'success';
                 successCount++;
+                if (result.processing) {
+                    processingCount++;
+                }
             } catch (error) {
                 fileItem.status = 'error';
                 fileItem.error = error.message;
                 errorCount++;
             }
-            
+
             this.renderUploadQueue();
             this.updateProgressBar((i + 1) / validFiles.length * 100);
         }
-        
+
         this.isUploading = false;
         this.hideUploadProgress();
         this.updateUploadButton();
         
         // Show results
         if (successCount > 0) {
-            this.showNotification(`${successCount} file${successCount === 1 ? '' : 's'} uploaded successfully! 🎉`, 'success');
-            
+            const note = processingCount > 0
+                ? ` ${processingCount} video${processingCount === 1 ? ' is' : 's are'} still converting.`
+                : '';
+            this.showNotification(
+                `${successCount} file${successCount === 1 ? '' : 's'} uploaded successfully! 🎉${note}`,
+                'success'
+            );
+
             // Clear successful uploads from queue after a delay
             setTimeout(() => {
                 this.uploadQueue = this.uploadQueue.filter(item => item.status !== 'success');
@@ -1174,33 +1705,122 @@ class Gallery {
     }
     
     /**
-     * Upload a single file
+     * Upload a single file, in slices.
+     *
+     * Nothing is posted whole any more. The file is cut into chunks and sent
+     * one at a time, which keeps every request small enough that the server's
+     * body-size limits stop being the cap on what the gallery accepts — and
+     * means a dropped connection costs one chunk instead of the whole upload.
+     *
+     * @param {object}   fileItem   Entry from this.uploadQueue
+     * @param {function} onProgress Called with 0..1 for this file
      */
-    async uploadSingleFile(fileItem) {
-        const formData = new FormData();
-        formData.append('action', 'upload');
-        formData.append('year', this.currentYear);
-        formData.append('file', fileItem.file);
-        
+    async uploadSingleFile(fileItem, onProgress = () => {}) {
+        const file = fileItem.file;
+
+        // 1. Open a session. The server decides the chunk size and the id.
+        const initData = new FormData();
+        initData.append('action', 'upload_init');
+        initData.append('year', this.currentYear);
+        initData.append('filename', file.name);
+        initData.append('size', file.size);
+
         // Add upload on behalf parameter for admins
         if (this.isAdmin) {
             const uploadOnBehalfSelect = document.getElementById('uploadOnBehalfSelect');
             if (uploadOnBehalfSelect && uploadOnBehalfSelect.value) {
-                formData.append('uploadOnBehalf', uploadOnBehalfSelect.value);
+                initData.append('uploadOnBehalf', uploadOnBehalfSelect.value);
             }
         }
-        
+
+        const session = await this.postToApi(initData);
+        const chunkSize = session.chunkSize || this.chunkSize;
+        const totalChunks = session.totalChunks;
+
+        try {
+            // 2. Send the slices.
+            for (let index = 0; index < totalChunks; index++) {
+                const start = index * chunkSize;
+                const blob = file.slice(start, Math.min(start + chunkSize, file.size));
+
+                await this.uploadChunkWithRetry(session.uploadId, index, blob);
+                onProgress((index + 1) / totalChunks);
+            }
+
+            // 3. Stitch it back together and file it.
+            const finalizeData = new FormData();
+            finalizeData.append('action', 'upload_finalize');
+            finalizeData.append('uploadId', session.uploadId);
+
+            return await this.postToApi(finalizeData);
+        } catch (error) {
+            // Leaving chunks behind would keep a partial file on disk until
+            // the 24h sweep; tell the server to drop them now. Best-effort:
+            // the original failure is the one worth reporting.
+            const abortData = new FormData();
+            abortData.append('action', 'upload_abort');
+            abortData.append('uploadId', session.uploadId);
+            this.postToApi(abortData).catch(() => {});
+
+            throw error;
+        }
+    }
+
+    /**
+     * Post one chunk, retrying a few times before giving up.
+     *
+     * Chunks are stored under their index rather than appended, so a retry
+     * that actually did land the first time overwrites itself harmlessly.
+     */
+    async uploadChunkWithRetry(uploadId, index, blob) {
+        let lastError = null;
+
+        for (let attempt = 0; attempt < this.chunkRetries; attempt++) {
+            if (attempt > 0) {
+                // Back off a little; a flaky link is usually flaky for a moment.
+                await new Promise(resolve => setTimeout(resolve, 500 * Math.pow(2, attempt - 1)));
+            }
+
+            try {
+                const formData = new FormData();
+                formData.append('action', 'upload_chunk');
+                formData.append('uploadId', uploadId);
+                formData.append('index', index);
+                formData.append('chunk', blob);
+
+                return await this.postToApi(formData);
+            } catch (error) {
+                lastError = error;
+            }
+        }
+
+        throw new Error(`Upload stalled on part ${index + 1}: ${lastError ? lastError.message : 'no attempts were made'}`);
+    }
+
+    /**
+     * POST a FormData to the API and unwrap the JSON, throwing on failure.
+     *
+     * A chunk that dies in transit can come back as an HTML error page rather
+     * than JSON, so the parse is guarded — otherwise the retry loop would see
+     * a SyntaxError and report that instead of the real problem.
+     */
+    async postToApi(formData) {
         const response = await fetch('api.php', {
             method: 'POST',
             body: formData
         });
-        
-        const data = await response.json();
-        
+
+        let data;
+        try {
+            data = await response.json();
+        } catch (parseError) {
+            throw new Error(`Server returned ${response.status}`);
+        }
+
         if (data.error) {
             throw new Error(data.error);
         }
-        
+
         return data;
     }
     
@@ -1212,20 +1832,23 @@ class Gallery {
         const imageSection = document.getElementById('imageCompressionTips');
         const videoSection = document.getElementById('videoCompressionTips');
         
-        // Show appropriate section
-        if (fileType.startsWith('image/')) {
-            imageSection.style.display = 'block';
-            videoSection.style.display = 'none';
-        } else if (fileType.startsWith('video/')) {
-            imageSection.style.display = 'none';
-            videoSection.style.display = 'block';
-        } else {
-            imageSection.style.display = 'block';
-            videoSection.style.display = 'block';
-        }
-        
+        // Show the section that matches what they picked
+        const isImage = fileType.startsWith('image/');
+        const isVideo = fileType.startsWith('video/');
+        imageSection.hidden = isVideo;
+        videoSection.hidden = isImage;
+
+        // The two kinds have different ceilings now, so the sentence naming
+        // the limit is picked the same way the tips are.
+        const imageNote = document.getElementById('imageLimitNote');
+        const videoNote = document.getElementById('videoLimitNote');
+        if (imageNote) imageNote.hidden = isVideo;
+        if (videoNote) videoNote.hidden = isImage;
+
+        this.compressionReturnFocus = document.activeElement;
         modal.classList.add('show');
         document.body.style.overflow = 'hidden';
+        document.getElementById('compressionModalClose')?.focus();
     }
     
     /**
@@ -1235,6 +1858,11 @@ class Gallery {
         const modal = document.getElementById('compressionModal');
         modal.classList.remove('show');
         document.body.style.overflow = '';
+
+        if (this.compressionReturnFocus && document.contains(this.compressionReturnFocus)) {
+            this.compressionReturnFocus.focus();
+        }
+        this.compressionReturnFocus = null;
     }
     
     /**
@@ -1265,7 +1893,7 @@ class Gallery {
     showUploadProgress() {
         const progressContainer = document.getElementById('uploadProgress');
         if (progressContainer) {
-            progressContainer.style.display = 'block';
+            progressContainer.hidden = false;
             this.updateProgressBar(0);
         }
     }
@@ -1277,7 +1905,7 @@ class Gallery {
         const progressContainer = document.getElementById('uploadProgress');
         if (progressContainer) {
             setTimeout(() => {
-                progressContainer.style.display = 'none';
+                progressContainer.hidden = true;
             }, 1000);
         }
     }
@@ -1302,47 +1930,20 @@ class Gallery {
         }
     }
     
-    /**
-     * Load video on demand when user clicks on placeholder
-     */
-    loadVideoOnDemand(videoElement) {
-        const videoSrc = videoElement.getAttribute('data-video-src');
-        if (!videoSrc) return;
-        
-        // Show loading indicator
-        videoElement.style.opacity = '0.5';
-        
-        // Create and add source element
-        const source = document.createElement('source');
-        source.src = videoSrc;
-        source.type = 'video/mp4';
-        
-        source.addEventListener('loadedmetadata', () => {
-            videoElement.style.opacity = '1';
-            videoElement.classList.remove('video-placeholder');
-            videoElement.preload = 'metadata';
-        });
-        
-        source.addEventListener('error', () => {
-            videoElement.style.opacity = '1';
-            this.showNotification('Failed to load video', 'error');
-        });
-        
-        videoElement.appendChild(source);
-        videoElement.removeAttribute('data-video-src');
-    }
-    
-    async uploadFile() {
-        // This method is deprecated - use startUpload() instead
-        console.warn('uploadFile() is deprecated, use startUpload() instead');
-        return this.startUpload();
-    }
-    
     async deleteFile(filename) {
-        if (!confirm('Are you sure you want to delete this file? This action cannot be undone.')) {
+        const file = this.files.find(f => f.filename === filename);
+        const name = file ? this.getDisplayName(file) : 'this file';
+
+        if (!confirm(`Delete ${name}? It will be removed from the gallery for everyone.`)) {
             return;
         }
-        
+
+        // Deleting from the viewer: close it first, as the file it shows and
+        // the list it navigates are both about to change.
+        if (document.getElementById('galleryModal')?.classList.contains('show')) {
+            this.closeModal();
+        }
+
         try {
             const formData = new FormData();
             formData.append('action', 'delete');
@@ -1360,7 +1961,7 @@ class Gallery {
                 throw new Error(data.error);
             }
             
-            this.showNotification('File deleted successfully', 'success');
+            this.showNotification('Deleted', 'success');
             await this.loadFiles(this.currentYear);
             await this.loadYears(); // Update counts
             
@@ -1369,69 +1970,128 @@ class Gallery {
         }
     }
     
-    openModal(index) {
+    openModal(index, returnFocusTo = null) {
         if (!this.displayedFiles || this.displayedFiles.length === 0) return;
+        if (!this.displayedFiles[index]) return;
 
         this.currentFileIndex = index;
-        const file = this.displayedFiles[index];
+        this.modalReturnFocus = returnFocusTo || document.activeElement;
 
         const modal = document.getElementById('galleryModal');
+
+        // Show/hide navigation buttons
+        const prevBtn = document.getElementById('modalPrev');
+        const nextBtn = document.getElementById('modalNext');
+        const multiple = this.displayedFiles.length > 1;
+        prevBtn.hidden = !multiple;
+        nextBtn.hidden = !multiple;
+
+        modal.classList.add('show');
+        document.body.style.overflow = 'hidden';
+
+        this.renderModalMedia(this.displayedFiles[index], { schedule: false });
+
+        // Move focus into the dialog so keyboard and screen reader users land
+        // somewhere useful, and so the trap has an anchor.
+        document.getElementById('modalClose')?.focus();
+    }
+
+    closeModal() {
+        const modal = document.getElementById('galleryModal');
+        modal.classList.remove('show');
+        document.body.style.overflow = '';
+
+        // Stop any playing video
+        const video = modal.querySelector('video');
+        if (video) {
+            video.pause();
+            video.currentTime = 0;
+        }
+
+        this.slideshow.stop();
+
+        // Hand focus back to the tile that opened this, rather than dropping it
+        // at the top of the document. A delete or a reorder can re-render the
+        // grid while the viewer is open, so fall back to whatever tile now
+        // sits at the same position.
+        const fallback = document.querySelector(
+            `.g-tile-open[data-index="${this.currentFileIndex}"]`
+        );
+        const target = (this.modalReturnFocus && document.contains(this.modalReturnFocus))
+            ? this.modalReturnFocus
+            : fallback;
+
+        target?.focus();
+        this.modalReturnFocus = null;
+    }
+
+    /**
+     * Paint one file into the viewer. Shared by open and navigate so the two
+     * paths cannot drift apart.
+     */
+    renderModalMedia(file, { schedule = true } = {}) {
         const modalMedia = document.getElementById('modalMedia');
         const modalFilename = document.getElementById('modalFilename');
         const modalMetadata = document.getElementById('modalMetadata');
         const modalCounter = document.getElementById('modalCounter');
 
-        // Update filename and metadata (using textContent to prevent XSS)
-        modalFilename.textContent = this.getDisplayName(file.filename);
-        modalMetadata.textContent = `${this.formatFileSize(file.size)} • ${this.formatDate(file.modified)}`;
-        modalCounter.textContent = `${index + 1} of ${this.displayedFiles.length}`;
-        
-        // Load media content safely
+        modalFilename.textContent = this.getDisplayName(file);
+        this.renderModalMetadata(file);
+        modalCounter.textContent = `${this.currentFileIndex + 1} of ${this.displayedFiles.length}`;
+
+        const modalDelete = document.getElementById('modalDelete');
+        if (modalDelete) {
+            modalDelete.hidden = !(this.canManageFile(file) && !file.processing);
+        }
+
         modalMedia.innerHTML = '';
+
+        const done = () => {
+            modalMedia.style.opacity = '1';
+            if (schedule) this.slideshow.scheduleNext();
+        };
+
         if (file.type === 'image') {
             const img = document.createElement('img');
             img.src = file.url;
-            img.alt = 'Gallery image';
+            img.alt = this.getDisplayName(file);
+            img.onload = done;
+            img.onerror = done;
             modalMedia.appendChild(img);
         } else {
             const video = document.createElement('video');
             video.controls = true;
-            video.autoplay = true;
-            video.muted = true;
-            video.preload = 'metadata';
-            
+            video.preload = 'auto';
+            video.playsInline = true;
+
             const source = document.createElement('source');
             source.src = file.url;
             source.type = 'video/mp4';
-            
+
+            // Pick up where the hover preview was, if it got going.
+            const resumeAt = this.resumeAt;
+            this.resumeAt = 0;
+
+            video.onloadedmetadata = () => {
+                if (resumeAt > 0 && resumeAt < video.duration) {
+                    video.currentTime = resumeAt;
+                }
+                done();
+            };
+            video.onerror = done;
+
             video.appendChild(source);
             modalMedia.appendChild(video);
+
+            // Opening a video plays it, with sound.
+            this.playVideo(video);
         }
-        
-        // Show/hide navigation buttons
-        const prevBtn = document.getElementById('modalPrev');
-        const nextBtn = document.getElementById('modalNext');
-        prevBtn.style.display = this.displayedFiles.length > 1 ? 'block' : 'none';
-        nextBtn.style.display = this.displayedFiles.length > 1 ? 'block' : 'none';
-        
-        modal.classList.add('show');
-        document.body.style.overflow = 'hidden';
-    }
-    
-    closeModal() {
-        const modal = document.getElementById('galleryModal');
-        modal.classList.remove('show');
-        document.body.style.overflow = '';
-        
-        // Stop any playing video
-        const video = modal.querySelector('video');
-        if (video) {
-            video.pause();
-            video.currentTime = 0; // Reset video to beginning
-        }
-        
-        // Stop slideshow when closing modal
-        this.slideshow.stop();
+
+        // Safety net if neither load nor error fires (cached media in some
+        // browsers reports neither).
+        setTimeout(() => {
+            if (modalMedia.style.opacity !== '1') done();
+        }, 2000);
     }
     
     previousImage() {
@@ -1456,60 +2116,12 @@ class Gallery {
 
     updateModalContent() {
         const file = this.displayedFiles[this.currentFileIndex];
+        if (!file) return;
+
         const modalMedia = document.getElementById('modalMedia');
-        const modalFilename = document.getElementById('modalFilename');
-        const modalMetadata = document.getElementById('modalMetadata');
-        const modalCounter = document.getElementById('modalCounter');
-        
-        // Update content with fade effect
         modalMedia.style.opacity = '0.5';
-        
-        setTimeout(() => {
-            modalFilename.textContent = this.getDisplayName(file.filename);
-            modalMetadata.textContent = `${this.formatFileSize(file.size)} • ${this.formatDate(file.modified)}`;
-            modalCounter.textContent = `${this.currentFileIndex + 1} of ${this.displayedFiles.length}`;
-            
-            modalMedia.innerHTML = '';
-            
-            if (file.type === 'image') {
-                const img = document.createElement('img');
-                img.src = file.url;
-                img.alt = 'Gallery image';
-                img.onload = () => {
-                    modalMedia.style.opacity = '1';
-                    // Schedule next slide if slideshow is active
-                    this.slideshow.scheduleNext();
-                };
-                modalMedia.appendChild(img);
-            } else {
-                const video = document.createElement('video');
-                video.controls = true;
-                video.preload = 'metadata';
-                video.muted = true; // Start muted, slideshow will handle autoplay
-                
-                const source = document.createElement('source');
-                source.src = file.url;
-                source.type = 'video/mp4';
-                
-                video.onloadedmetadata = () => {
-                    modalMedia.style.opacity = '1';
-                    // Schedule next slide if slideshow is active
-                    this.slideshow.scheduleNext();
-                };
-                
-                video.appendChild(source);
-                modalMedia.appendChild(video);
-            }
-            
-            // Fallback fade-in
-            setTimeout(() => {
-                if (modalMedia.style.opacity !== '1') {
-                    modalMedia.style.opacity = '1';
-                    this.slideshow.scheduleNext();
-                }
-            }, 2000);
-            
-        }, 150);
+
+        setTimeout(() => this.renderModalMedia(file), 150);
     }
     
     toggleSlideshow() {
@@ -1530,7 +2142,7 @@ class Gallery {
     
     showLoading() {
         const grid = document.getElementById('galleryGrid');
-        grid.innerHTML = '<div class="loading" style="grid-column: 1 / -1;">Loading memories...</div>';
+        grid.innerHTML = '<div class="loading">Loading…</div>';
     }
     
     hideLoading() {
@@ -1540,204 +2152,202 @@ class Gallery {
         }
     }
     
-    showProgress(percent) {
-        const progressBar = document.getElementById('progressBar');
-        const progressFill = document.getElementById('progressFill');
-        
-        if (percent > 0) {
-            progressBar.style.display = 'block';
-            progressFill.style.width = percent + '%';
-        }
-    }
-    
-    hideProgress() {
-        const progressBar = document.getElementById('progressBar');
-        setTimeout(() => {
-            progressBar.style.display = 'none';
-        }, 500);
-    }
-    
     showNotification(message, type = 'success') {
         const container = document.getElementById('notificationContainer');
-        
+        if (!container) return;
+
         const notification = document.createElement('div');
         notification.className = `notification ${type}`;
-        
-        // Add icon based on type
-        let icon = '';
-        switch (type) {
-            case 'success': icon = '✓'; break;
-            case 'error': icon = '✗'; break;
-            case 'info': icon = 'ℹ'; break;
-        }
-        
-        notification.innerHTML = `
-            <span style="margin-right: 8px;">${icon}</span>
-            <span>${message}</span>
-        `;
-        
+        // Announce without stealing focus. Errors interrupt; the rest wait.
+        notification.setAttribute('role', type === 'error' ? 'alert' : 'status');
+
+        const icons = { success: '✓', error: '✗', warning: '!', info: 'i' };
+
+        const icon = document.createElement('span');
+        icon.className = 'notification-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = icons[type] || '';
+
+        // Built with textContent rather than innerHTML. Every other render path
+        // in this file escapes; this one interpolated the message raw, which
+        // would have become a hole the first time a filename or a user-supplied
+        // field reached an error string.
+        const text = document.createElement('span');
+        text.textContent = message;
+
+        notification.append(icon, text);
         container.appendChild(notification);
-        
-        // Show notification
-        setTimeout(() => notification.classList.add('show'), 100);
-        
-        // Hide notification
+
+        requestAnimationFrame(() => notification.classList.add('show'));
+
         setTimeout(() => {
             notification.classList.remove('show');
             setTimeout(() => notification.remove(), 300);
         }, 4000);
     }
     
+    /**
+     * Drag to reorder, with the grid itself as the preview.
+     *
+     * The dragged tile is moved through the grid as the pointer crosses its
+     * neighbours, so what is on screen mid-drag is exactly what a drop saves.
+     * Highlighting the tile under the pointer (what this used to do) says
+     * which tile you are over but not which side of it you land on, which is
+     * the part that was impossible to guess. The numbered badges renumber as the
+     * preview moves, so the landing position is also readable as a number.
+     */
     setupDragAndDrop() {
         const grid = document.getElementById('galleryGrid');
-        
+        if (!grid) return;
+
         // Remove any existing event listeners first
         if (this.dragHandlers) {
-            grid.removeEventListener('dragstart', this.dragHandlers.dragstart);
-            grid.removeEventListener('dragover', this.dragHandlers.dragover);
-            grid.removeEventListener('dragenter', this.dragHandlers.dragenter);
-            grid.removeEventListener('dragleave', this.dragHandlers.dragleave);
-            grid.removeEventListener('drop', this.dragHandlers.drop);
-            grid.removeEventListener('dragend', this.dragHandlers.dragend);
+            Object.entries(this.dragHandlers).forEach(([type, handler]) => {
+                grid.removeEventListener(type, handler);
+            });
         }
-        
-        let draggedElement = null;
-        let draggedIndex = null;
-        
-        // Create event handler functions
-        const dragstartHandler = (e) => {
-            // Prevent dragging during reorder operations
-            if (this.isReordering) {
-                e.preventDefault();
-                return;
-            }
-            
-            if (e.target.classList.contains('gallery-item') && e.target.draggable) {
-                draggedElement = e.target;
-                draggedIndex = parseInt(e.target.dataset.originalIndex);
-                e.target.classList.add('dragging');
+
+        let draggedTile = null;
+        let originIndex = -1;
+
+        const tiles = () => Array.from(grid.querySelectorAll('.g-tile'));
+
+        const renumber = () => {
+            tiles().forEach((tile, i) => {
+                const badge = tile.querySelector('.g-tile-pos');
+                if (badge) badge.textContent = String(i + 1);
+            });
+        };
+
+        const clearMarks = () => {
+            grid.querySelectorAll('.g-tile').forEach(tile => {
+                tile.classList.remove('dragging');
+            });
+            grid.classList.remove('is-dragging');
+            draggedTile = null;
+            originIndex = -1;
+        };
+
+        const handlers = {
+            dragstart: (e) => {
+                const tile = e.target.closest('.g-tile');
+                if (this.isReordering || !tile || tile.getAttribute('draggable') !== 'true') {
+                    e.preventDefault();
+                    return;
+                }
+                draggedTile = tile;
+                originIndex = tiles().indexOf(tile);
+                tile.classList.add('dragging');
+                grid.classList.add('is-dragging');
                 e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/html', e.target.outerHTML);
+                // A plain-text payload. The old code stuffed the tile's full
+                // outerHTML into the transfer, which is never read back.
+                e.dataTransfer.setData('text/plain', tile.dataset.filename || '');
+            },
+
+            dragover: (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (!draggedTile) return;
+
+                const target = e.target.closest('.g-tile');
+                if (!target || target === draggedTile) return;
+
+                // Past the middle of the tile under the pointer means landing
+                // after it, before the middle means landing in front of it.
+                const rect = target.getBoundingClientRect();
+                const after = (e.clientX - rect.left) > rect.width / 2;
+                const ref = after ? target.nextElementSibling : target;
+                if (ref === draggedTile) return;
+
+                grid.insertBefore(draggedTile, ref);
+                renumber();
+            },
+
+            drop: (e) => {
+                e.preventDefault();
+                if (!draggedTile || this.isReordering) {
+                    clearMarks();
+                    return;
+                }
+
+                // Rearranging is only available in camp order, so the rendered
+                // position the preview settled on is the position to store.
+                const from = originIndex;
+                const to = tiles().indexOf(draggedTile);
+                clearMarks();
+
+                if (from >= 0 && to >= 0 && from !== to) {
+                    this.reorderFile(from, to);
+                }
+            },
+
+            dragend: () => {
+                // Only reached without a drop when the drag was cancelled or
+                // released outside the grid: the preview has moved the tile,
+                // so re-render from the order actually stored.
+                if (draggedTile) {
+                    clearMarks();
+                    this.renderGallery();
+                    return;
+                }
+                clearMarks();
             }
         };
-        
-        const dragoverHandler = (e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-        };
-        
-        const dragenterHandler = (e) => {
-            e.preventDefault();
-            const target = e.target.closest('.gallery-item');
-            if (target && target !== draggedElement && target.draggable) {
-                target.classList.add('drag-over');
-            }
-        };
-        
-        const dragleaveHandler = (e) => {
-            const target = e.target.closest('.gallery-item');
-            if (target && !target.contains(e.relatedTarget)) {
-                target.classList.remove('drag-over');
-            }
-        };
-        
-        const dropHandler = (e) => {
-            e.preventDefault();
-            
-            // Prevent drop during reorder operations
-            if (this.isReordering) {
-                return;
-            }
-            
-            const dropTarget = e.target.closest('.gallery-item');
-            if (dropTarget && dropTarget !== draggedElement && dropTarget.draggable) {
-                const dropIndex = parseInt(dropTarget.dataset.originalIndex);
-                this.reorderFile(draggedIndex, dropIndex);
-            }
-            
-            // Clean up visual indicators
-            document.querySelectorAll('.gallery-item').forEach(item => {
-                item.classList.remove('dragging', 'drag-over');
-            });
-        };
-        
-        const dragendHandler = (e) => {
-            // Clean up visual indicators
-            document.querySelectorAll('.gallery-item').forEach(item => {
-                item.classList.remove('dragging', 'drag-over');
-            });
-            draggedElement = null;
-            draggedIndex = null;
-        };
-        
-        // Store references for cleanup
-        this.dragHandlers = {
-            dragstart: dragstartHandler,
-            dragover: dragoverHandler,
-            dragenter: dragenterHandler,
-            dragleave: dragleaveHandler,
-            drop: dropHandler,
-            dragend: dragendHandler
-        };
-        
-        // Add event listeners
-        grid.addEventListener('dragstart', this.dragHandlers.dragstart);
-        grid.addEventListener('dragover', this.dragHandlers.dragover);
-        grid.addEventListener('dragenter', this.dragHandlers.dragenter);
-        grid.addEventListener('dragleave', this.dragHandlers.dragleave);
-        grid.addEventListener('drop', this.dragHandlers.drop);
-        grid.addEventListener('dragend', this.dragHandlers.dragend);
+
+        this.dragHandlers = handlers;
+        Object.entries(handlers).forEach(([type, handler]) => {
+            grid.addEventListener(type, handler);
+        });
     }
-    
+
     async reorderFile(fromIndex, toIndex) {
         if (fromIndex === toIndex) return;
-        
-        // Prevent concurrent reorder operations
+
         if (this.isReordering) {
-            this.showNotification('Please wait for current reorder to complete', 'warning');
+            this.showNotification('Still saving the last move — try again in a moment.', 'warning');
             return;
         }
-        
-        const file = this.files[fromIndex];
+
+        const file = this.displayedFiles[fromIndex];
         if (!file) {
-            this.showNotification('File not found', 'error');
+            this.showNotification('That photo is no longer in the list. Reloading.', 'error');
+            await this.loadFiles(this.currentYear);
             return;
         }
-        
+
+        if (!this.canManageFile(file)) {
+            this.showNotification('You can only rearrange photos you uploaded.', 'warning');
+            return;
+        }
+
         try {
             this.isReordering = true;
-            
+
             const formData = new FormData();
             formData.append('action', 'reorder');
             formData.append('year', this.currentYear);
             formData.append('filename', file.filename);
             formData.append('position', toIndex);
-            
+
             const response = await fetch('api.php', {
                 method: 'POST',
                 body: formData
             });
-            
+
             const data = await response.json();
-            
+
             if (data.error) {
                 throw new Error(data.error);
             }
-            
-            // Update the filename in our local data immediately
-            if (data.newFilename && data.newFilename !== file.filename) {
-                file.filename = data.newFilename;
-            }
-            
-            this.showNotification('File reordered successfully', 'success');
-            
-            // Reload files to get updated ordering
+
+            this.showNotification('Moved', 'success');
             await this.loadFiles(this.currentYear);
-            
+
         } catch (error) {
             console.error('Reorder error:', error);
-            this.showNotification('Reorder failed: ' + error.message, 'error');
-            // Reload files on error to ensure we have correct state
+            this.showNotification('Could not move that photo: ' + error.message, 'error');
+            // Reload on error so the grid reflects what the server actually has
             await this.loadFiles(this.currentYear);
         } finally {
             this.isReordering = false;

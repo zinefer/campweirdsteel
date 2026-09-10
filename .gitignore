@@ -40,3 +40,9 @@ coverage/
 # Ignore user-specific files
 *.sublime-workspace
 *.sublime-project
+
+# Gallery media. A symlink to the storage mount in production, and a real
+# directory if you point GALLERY_STORAGE_PATH somewhere local. Either way it
+# holds uploads, chunk staging (.uploads), transcode locks (.locks) and
+# per-year .processing markers — none of which belong in the repo.
+/gallery-storage

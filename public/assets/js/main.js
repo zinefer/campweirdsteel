@@ -1,8 +1,14 @@
 // Create floating particles
 function createParticles() {
     const particlesContainer = document.getElementById('particles');
+    if (!particlesContainer) return;
+
+    // CSS already stops the animation under reduced motion, but 50 nodes that
+    // can never move are not worth creating at all.
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
     const particleCount = 50;
-    
+
     for (let i = 0; i < particleCount; i++) {
         const particle = document.createElement('div');
         particle.classList.add('particle');

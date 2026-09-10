@@ -4,7 +4,13 @@
  * Handles file operations for the gallery
  */
 
-require_once 'config.php';
+// __DIR__, not a bare 'config.php'. PHP resolves a relative include against
+// include_path (which begins with '.', the *current working directory*) before
+// it falls back to the calling script's own directory — and a deployed app
+// root contains Flarum's config.php. Running with the CWD set there, as the
+// transcode service does, silently loaded that array instead of this class and
+// died later at the first use of GalleryConfig, with nothing to say why.
+require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/../../vendor/autoload.php';
 
 use FFMpeg\FFMpeg;
@@ -15,6 +21,7 @@ use lsolesen\pel\PelIfd;
 use lsolesen\pel\PelEntryShort;
 use lsolesen\pel\PelExif;
 use lsolesen\pel\PelTag;
+use Symfony\Component\Process\Process;
 
 class GalleryManager {
     
@@ -62,13 +69,231 @@ class GalleryManager {
         
         // Second pass: add cached user display names
         foreach ($fileData as $file) {
-            $file['uploaderName'] = htmlspecialchars(self::getCachedUserDisplayName($file['userId']), ENT_QUOTES, 'UTF-8');
+            // Raw text. This is JSON, not markup — the client escapes at the
+            // point it builds HTML. Escaping here as well double-escaped any
+            // name containing an ampersand or a quote.
+            $file['uploaderName'] = self::getCachedUserDisplayName($file['userId']);
             $files[] = $file;
         }
         
         return $files;
     }
     
+    /**
+     * When a photo or video was taken, in Unix seconds, or null if it does
+     * not say.
+     *
+     * This is deliberately separate from getImageMetadata(): that one runs on
+     * every listing request and is best-effort decoration, whereas this runs
+     * once at upload and decides the date the gallery will show forever after.
+     */
+    public static function extractCaptureTime($filePath, $filename = null) {
+        if ($filename === null) {
+            $filename = basename($filePath);
+        }
+
+        if (!is_file($filePath)) {
+            return null;
+        }
+
+        if (GalleryConfig::isImage($filename)) {
+            return self::extractImageCaptureTime($filePath, $filename);
+        }
+
+        if (GalleryConfig::isVideo($filename)) {
+            return self::extractVideoCaptureTime($filePath);
+        }
+
+        return null;
+    }
+
+    /**
+     * Stamp a file's mtime with its capture time.
+     *
+     * The gallery dates every tile by filemtime(), which for an upload is the
+     * moment it landed on disk. Moving the mtime back to when the shutter
+     * actually fired means listing, sorting and display all get the right date
+     * without reading EXIF on every request.
+     *
+     * Returns the timestamp applied, or null if the file had nothing usable
+     * (in which case the upload time stands, as before).
+     */
+    public static function applyCaptureTime($filePath, $filename = null) {
+        $captured = self::extractCaptureTime($filePath, $filename);
+        if ($captured === null) {
+            return null;
+        }
+
+        if (!@touch($filePath, $captured)) {
+            error_log("Failed to stamp capture time on {$filePath}");
+            return null;
+        }
+
+        return $captured;
+    }
+
+    /**
+     * Capture time from a still image's EXIF block.
+     */
+    private static function extractImageCaptureTime($filePath, $filename) {
+        if (!function_exists('exif_read_data')) {
+            return null;
+        }
+
+        // PNG and GIF carry no EXIF at all. WebP can, and PHP has read it
+        // since 7.2, so it is worth the attempt.
+        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+        if (!in_array($ext, ['jpg', 'jpeg', 'webp'])) {
+            return null;
+        }
+
+        try {
+            $exif = @exif_read_data($filePath);
+        } catch (Exception $e) {
+            error_log("EXIF read error for {$filename}: " . $e->getMessage());
+            return null;
+        }
+
+        if (!is_array($exif)) {
+            return null;
+        }
+
+        // DateTimeOriginal is the shutter. DateTime is the file's own
+        // modification stamp, which any editor along the way will have
+        // rewritten, so it is only a last resort.
+        foreach (['DateTimeOriginal', 'DateTimeDigitized', 'DateTime'] as $tag) {
+            if (!isset($exif[$tag])) {
+                continue;
+            }
+
+            $timestamp = self::parseExifDate($exif[$tag], self::exifOffsetFor($exif, $tag));
+            if ($timestamp !== null) {
+                return $timestamp;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The UTC offset EXIF recorded alongside a date tag, as "+02:00", or null.
+     *
+     * EXIF dates are bare local time with no zone, so without this the server's
+     * timezone is the only thing to go on. Phones have written the matching
+     * OffsetTime* tags since EXIF 2.31; PHP surfaces them under their raw tag
+     * ids because it has no names for them.
+     */
+    private static function exifOffsetFor($exif, $tag) {
+        $offsetTags = [
+            'DateTime'          => 'UndefinedTag:0x9010',
+            'DateTimeOriginal'  => 'UndefinedTag:0x9011',
+            'DateTimeDigitized' => 'UndefinedTag:0x9012',
+        ];
+
+        if (!isset($offsetTags[$tag]) || !isset($exif[$offsetTags[$tag]])) {
+            return null;
+        }
+
+        $offset = trim($exif[$offsetTags[$tag]]);
+
+        return preg_match('/^[+-]\d{2}:\d{2}$/', $offset) ? $offset : null;
+    }
+
+    /**
+     * Parse EXIF's "YYYY:MM:DD HH:MM:SS" into a Unix timestamp.
+     *
+     * strtotime() cannot be trusted with this format — the colons in the date
+     * half make it ambiguous — so the format is given explicitly.
+     */
+    private static function parseExifDate($value, $utcOffset = null) {
+        $value = trim((string) $value);
+
+        // An unset date field is written as all zeroes rather than omitted.
+        if ($value === '' || strpos($value, '0000:00:00') === 0) {
+            return null;
+        }
+
+        $date = $utcOffset === null
+            ? DateTime::createFromFormat('Y:m:d H:i:s', $value)
+            : DateTime::createFromFormat('Y:m:d H:i:sP', $value . $utcOffset);
+
+        if ($date === false) {
+            return null;
+        }
+
+        return self::sanityCheckTimestamp($date->getTimestamp());
+    }
+
+    /**
+     * Capture time from a video container's metadata.
+     */
+    private static function extractVideoCaptureTime($filePath) {
+        if (!is_executable(GalleryConfig::FFPROBE_BINARY)) {
+            return null;
+        }
+
+        // Symfony's Process is safe to use here, unlike in queueTranscode():
+        // this call is synchronous, so the destructor that would kill a
+        // backgrounded worker fires only after the probe has already finished.
+        $process = new Process([
+            GalleryConfig::FFPROBE_BINARY,
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            $filePath,
+        ]);
+        $process->setTimeout(30);
+        $process->run();
+
+        if (!$process->isSuccessful()) {
+            return null;
+        }
+
+        $data = json_decode($process->getOutput(), true);
+        if (!isset($data['format']['tags'])) {
+            return null;
+        }
+
+        // Tag names vary by muxer and case is not guaranteed.
+        $tags = array_change_key_case($data['format']['tags'], CASE_LOWER);
+        foreach (['creation_time', 'com.apple.quicktime.creationdate', 'date'] as $tag) {
+            if (!isset($tags[$tag])) {
+                continue;
+            }
+
+            // These are ISO 8601 and carry their own zone, so strtotime is
+            // the right tool for once.
+            $timestamp = strtotime(trim($tags[$tag]));
+            if ($timestamp !== false) {
+                $timestamp = self::sanityCheckTimestamp($timestamp);
+                if ($timestamp !== null) {
+                    return $timestamp;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Reject dates a camera could not plausibly have produced.
+     *
+     * QuickTime counts from 1904 and a camera with a dead clock reports 1970,
+     * both of which would file the photo at the very end of an
+     * oldest-first sort rather than being ignored.
+     */
+    private static function sanityCheckTimestamp($timestamp) {
+        if ($timestamp < 631152000) { // 1990-01-01
+            return null;
+        }
+
+        if ($timestamp > time() + 86400) {
+            return null;
+        }
+
+        return $timestamp;
+    }
+
     /**
      * Get image metadata including EXIF data
      */
@@ -123,37 +348,115 @@ class GalleryManager {
     }
     
     /**
-     * Upload a file
+     * Width and height of a video, read from its generated poster frame.
+     *
+     * The grid uses this to give each tile the shape of the thing inside it.
+     * Reading the poster's header avoids probing the video itself.
      */
-    public static function uploadFile($year, $uploadedFile, $userId) {
-        if (!GalleryConfig::isAllowedFileType($uploadedFile['name'])) {
+    public static function getPosterDimensions($year, $filename) {
+        if (GalleryConfig::isImage($filename)) {
+            return null;
+        }
+
+        $posterFilename = pathinfo($filename, PATHINFO_FILENAME) . '.jpg';
+        $posterPath = GalleryConfig::getYearPath($year)
+            . DIRECTORY_SEPARATOR . 'thumbs'
+            . DIRECTORY_SEPARATOR . $posterFilename;
+
+        if (!file_exists($posterPath)) {
+            return null;
+        }
+
+        $info = @getimagesize($posterPath);
+        if (!$info) {
+            return null;
+        }
+
+        return ['width' => $info[0], 'height' => $info[1]];
+    }
+
+    /**
+     * Return a filename that is free inside $yearPath.
+     *
+     * Suffixes the name part (never the ordering or user id, which the
+     * extract* helpers parse positionally by splitting on the first two
+     * underscores) until nothing is in the way.
+     *
+     * O_EXCL would close the last sliver of race between the check and the
+     * rename, but uploads from one session are sequential and the suffix
+     * search re-runs per attempt; a collision across two simultaneous
+     * uploaders lands on the next free suffix rather than on top of a file.
+     */
+    private static function claimFilename($yearPath, $filename) {
+        if (!file_exists($yearPath . DIRECTORY_SEPARATOR . $filename)) {
+            return $filename;
+        }
+
+        $ext = pathinfo($filename, PATHINFO_EXTENSION);
+        $base = pathinfo($filename, PATHINFO_FILENAME);
+
+        for ($n = 2; $n < 10000; $n++) {
+            $candidate = "{$base}-{$n}.{$ext}";
+            if (!file_exists($yearPath . DIRECTORY_SEPARATOR . $candidate)) {
+                return $candidate;
+            }
+        }
+
+        throw new Exception('Could not find a free filename for this upload');
+    }
+
+    /**
+     * File a completed upload into its year.
+     *
+     * The source is a plain path — chunked uploads are stitched together in
+     * the staging area first, so by the time we get here there is no such
+     * thing as an "uploaded file" in PHP's sense any more.
+     *
+     * Images get their thumbnail on the spot. Videos get queued for
+     * re-encoding, which happens out of band because it takes far longer than
+     * a request is allowed to live.
+     */
+    public static function storeUpload($year, $sourcePath, $originalName, $userId) {
+        if (!GalleryConfig::isAllowedFileType($originalName)) {
             throw new Exception('File type not allowed');
         }
-        
-        if ($uploadedFile['size'] > GalleryConfig::MAX_FILE_SIZE) {
+
+        $size = filesize($sourcePath);
+        if ($size > GalleryConfig::maxSizeFor($originalName)) {
             throw new Exception('File too large');
         }
-        
-        if ($uploadedFile['error'] !== UPLOAD_ERR_OK) {
-            throw new Exception('Upload error: ' . $uploadedFile['error']);
-        }
-        
+
         // Validate file content matches extension
-        if (!self::validateFileContent($uploadedFile['tmp_name'], $uploadedFile['name'])) {
+        if (!self::validateFileContent($sourcePath, $originalName)) {
             throw new Exception('File content does not match file type');
         }
-        
+
         $yearPath = GalleryConfig::getYearPath($year);
-        $safeFilename = GalleryConfig::generateSafeFilename($uploadedFile['name'], $userId);
+        $safeFilename = GalleryConfig::generateSafeFilename($originalName, $userId, $year);
+
+        // Never land on a name that is already taken. rename() overwrites
+        // without complaint, so a duplicate destination destroyed the earlier
+        // upload and still reported success to the browser — no exception, no
+        // log line, just a file count that did not match what was sent.
+        //
+        // Two uploads collide whenever their ordering, uploader and sanitised
+        // name all match, which is routine from a phone: iOS transcodes HEIC
+        // on upload and names every one of them `image.jpg`.
+        $safeFilename = self::claimFilename($yearPath, $safeFilename);
         $destinationPath = $yearPath . DIRECTORY_SEPARATOR . $safeFilename;
-        
-        if (!move_uploaded_file($uploadedFile['tmp_name'], $destinationPath)) {
+
+        if (!rename($sourcePath, $destinationPath)) {
             throw new Exception('Failed to save file');
         }
-        
+
         // Set proper permissions
         chmod($destinationPath, 0644);
-        
+
+        // Date the file by when it was taken rather than when it arrived. Has
+        // to happen before the thumbnail is made, or the thumbnail would look
+        // older than its original and be rebuilt on every request.
+        self::applyCaptureTime($destinationPath, $safeFilename);
+
         // Generate thumbnail immediately for images
         if (GalleryConfig::isImage($safeFilename)) {
             try {
@@ -162,11 +465,26 @@ class GalleryManager {
                 // Log thumbnail generation error but don't fail the upload
                 error_log("Failed to generate thumbnail for {$safeFilename}: " . $e->getMessage());
             }
+
+            return ['filename' => $safeFilename, 'processing' => false];
         }
-        
-        return $safeFilename;
+
+        $queued = self::queueTranscode($year, $safeFilename);
+
+        // If the worker could not be started the video is still perfectly
+        // filed, just in whatever container the camera produced. Generate its
+        // poster inline so the tile isn't blank.
+        if (!$queued) {
+            try {
+                self::generateVideoPoster($year, $safeFilename);
+            } catch (Exception $e) {
+                error_log("Failed to generate poster for {$safeFilename}: " . $e->getMessage());
+            }
+        }
+
+        return ['filename' => $safeFilename, 'processing' => $queued];
     }
-    
+
     /**
      * Validate file content matches the expected file type
      */
@@ -197,11 +515,466 @@ class GalleryManager {
         
         return in_array($mimeType, $allowedMimeTypes[$ext]);
     }
-    
+
+    /**
+     * Directory holding one marker file per video currently being re-encoded.
+     *
+     * Dot-prefixed so getOrderedFiles() — which skips directories anyway —
+     * and anything else walking a year folder stays clear of it.
+     */
+    private static function processingDir($year) {
+        return GalleryConfig::getYearPath($year) . DIRECTORY_SEPARATOR . '.processing';
+    }
+
+    /**
+     * Is this file waiting on, or in the middle of, a transcode?
+     *
+     * The gallery shows these as placeholders: the file on disk is still the
+     * camera's original, which is exactly the thing that might not play.
+     */
+    public static function isProcessing($year, $filename) {
+        $marker = self::processingDir($year) . DIRECTORY_SEPARATOR . $filename;
+        if (!file_exists($marker)) {
+            return false;
+        }
+
+        $age = time() - filemtime($marker);
+        $state = trim((string) @file_get_contents($marker));
+
+        // The marker is written before the worker is spawned and claimed by
+        // the worker once it is running. A marker still unclaimed after the
+        // grace period means the spawn itself failed — a missing CLI binary,
+        // a fork that never happened — and nothing is ever going to finish
+        // it. Without this the tile polls "Converting…" for over an hour.
+        if (strpos($state, 'started') !== 0 && $age > GalleryConfig::TRANSCODE_START_GRACE) {
+            @unlink($marker);
+            error_log("Transcode worker never claimed {$filename}; clearing marker");
+            return false;
+        }
+
+        // A worker that was killed — OOM, a deploy, a reboot — never gets to
+        // clear its own marker, and the tile would sit at "processing"
+        // forever. A live worker touches its marker while it waits for a
+        // slot, so mtime is a heartbeat rather than a start time.
+        if ($age > GalleryConfig::TRANSCODE_TIMEOUT + 300) {
+            @unlink($marker);
+            error_log("Cleared stale transcode marker for {$filename}");
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Note that a transcode is outstanding. Returns false if the marker could
+     * not be written, in which case no worker should be started.
+     */
+    public static function markProcessing($year, $filename) {
+        $dir = self::processingDir($year);
+        if (!is_dir($dir) && !mkdir($dir, 0755, true)) {
+            return false;
+        }
+
+        return file_put_contents($dir . DIRECTORY_SEPARATOR . $filename, 'queued:' . time()) !== false;
+    }
+
+    /**
+     * Claim a marker from inside the worker.
+     *
+     * Until this happens the marker only records that something was spawned;
+     * isProcessing() gives up on an unclaimed marker after
+     * TRANSCODE_START_GRACE so a failed spawn does not strand the tile.
+     */
+    public static function markTranscodeStarted($year, $filename) {
+        $marker = self::processingDir($year) . DIRECTORY_SEPARATOR . $filename;
+        return @file_put_contents($marker, 'started:' . time()) !== false;
+    }
+
+    /**
+     * Heartbeat. A worker queued behind the concurrency cap can be waiting
+     * for a long time, and without this the staleness sweep would collect a
+     * marker whose worker is alive and simply waiting its turn.
+     */
+    public static function touchProcessing($year, $filename) {
+        @touch(self::processingDir($year) . DIRECTORY_SEPARATOR . $filename);
+    }
+
+    /**
+     * Every outstanding transcode, across every year, oldest first.
+     *
+     * The .processing markers *are* the queue — there is no second list to
+     * keep in step with them, and they already survive a reboot because they
+     * are files. A marker whose source has since been deleted is collected
+     * here rather than handed to a worker that would only reject it.
+     *
+     * @return array of ['year' => int, 'filename' => string, 'queuedAt' => int]
+     */
+    public static function pendingTranscodes() {
+        $basePath = GalleryConfig::getBasePath();
+        if ($basePath === null) {
+            return [];
+        }
+
+        $jobs = [];
+
+        foreach (scandir($basePath) ?: [] as $entry) {
+            // Year directories only: .uploads, .locks and friends are not one.
+            if (!preg_match('/^[0-9]{4}$/', $entry)) {
+                continue;
+            }
+
+            $year = (int) $entry;
+            $dir = $basePath . DIRECTORY_SEPARATOR . $entry . DIRECTORY_SEPARATOR . '.processing';
+            if (!is_dir($dir)) {
+                continue;
+            }
+
+            foreach (scandir($dir) ?: [] as $filename) {
+                if ($filename === '.' || $filename === '..') {
+                    continue;
+                }
+
+                // Same alphabet generateSafeFilename() produces. A marker
+                // named anything else did not come from us.
+                if (!preg_match('/^[a-zA-Z0-9._-]+$/', $filename)) {
+                    continue;
+                }
+
+                $marker = $dir . DIRECTORY_SEPARATOR . $filename;
+                $source = $basePath . DIRECTORY_SEPARATOR . $entry . DIRECTORY_SEPARATOR . $filename;
+
+                if (!file_exists($source)) {
+                    @unlink($marker);
+                    continue;
+                }
+
+                $jobs[] = [
+                    'year'     => $year,
+                    'filename' => $filename,
+                    'queuedAt' => (int) @filemtime($marker),
+                ];
+            }
+        }
+
+        // FIFO: whoever has been waiting longest goes next.
+        usort($jobs, function ($a, $b) {
+            return $a['queuedAt'] <=> $b['queuedAt'];
+        });
+
+        return $jobs;
+    }
+
+    /**
+     * Take exclusive ownership of one transcode job.
+     *
+     * Returns the open handle on success and null if someone else already has
+     * it. The lock lives on its own file rather than on the marker, because
+     * the marker is rewritten by markTranscodeStarted() and deleted by
+     * clearProcessing() — locking something with that lifecycle invites two
+     * workers onto one file across a delete/recreate.
+     *
+     * Like the encode slots, this is an flock(), so a worker that dies in any
+     * fashion releases the job rather than stranding it.
+     */
+    public static function claimTranscode($year, $filename) {
+        try {
+            $dir = GalleryConfig::getLocksPath();
+        } catch (Exception $e) {
+            return null;
+        }
+
+        $handle = @fopen($dir . DIRECTORY_SEPARATOR . 'job_' . (int) $year . '_' . $filename, 'c');
+        if ($handle === false) {
+            return null;
+        }
+
+        if (!flock($handle, LOCK_EX | LOCK_NB)) {
+            fclose($handle);
+            return null;
+        }
+
+        return $handle;
+    }
+
+    /**
+     * Hand a claim (or an encode slot) back.
+     */
+    public static function releaseLock($handle) {
+        if (is_resource($handle)) {
+            @flock($handle, LOCK_UN);
+            @fclose($handle);
+        }
+    }
+
+    /**
+     * The drain service says it is alive.
+     */
+    public static function drainerHeartbeat() {
+        try {
+            $dir = GalleryConfig::getLocksPath();
+        } catch (Exception $e) {
+            return;
+        }
+
+        @touch($dir . DIRECTORY_SEPARATOR . 'drainer.alive');
+    }
+
+    /**
+     * Has the drain service checked in recently?
+     *
+     * queueTranscode() uses this to decide whether it can simply leave a
+     * marker or has to spawn a one-shot worker itself. Without it, deploying
+     * this code somewhere the systemd unit was never installed would mean no
+     * video ever converts again, silently.
+     */
+    public static function drainerIsRunning() {
+        try {
+            $dir = GalleryConfig::getLocksPath();
+        } catch (Exception $e) {
+            return false;
+        }
+
+        $beat = $dir . DIRECTORY_SEPARATOR . 'drainer.alive';
+        if (!file_exists($beat)) {
+            return false;
+        }
+
+        return (time() - (int) @filemtime($beat)) < GalleryConfig::DRAINER_HEARTBEAT_STALE;
+    }
+
+    /**
+     * Block until one of MAX_CONCURRENT_TRANSCODES encode slots is free.
+     *
+     * Slots are flock()ed files, so a worker that dies for any reason —
+     * including SIGKILL — releases its slot when the kernel closes the fd.
+     * A counter in a file would leak on every crash.
+     *
+     * Returns the open handle; the lock is held until it is closed or the
+     * process exits. Callers must keep the handle alive for the encode.
+     */
+    /**
+     * Set by the drain service so the slot wait below keeps its heartbeat
+     * alive. Waiting for a slot can take as long as a whole encode, and a
+     * drainer that goes quiet for DRAINER_HEARTBEAT_STALE looks dead to
+     * queueTranscode() — which would start spawning per-video workers again,
+     * the exact pileup the service exists to prevent.
+     */
+    public static $isDrainService = false;
+
+    public static function acquireTranscodeSlot($year, $filename) {
+        try {
+            $dir = GalleryConfig::getLocksPath();
+        } catch (Exception $e) {
+            return null; // No lock dir; proceed uncapped rather than not at all.
+        }
+
+        while (true) {
+            for ($i = 0; $i < GalleryConfig::MAX_CONCURRENT_TRANSCODES; $i++) {
+                $handle = @fopen($dir . DIRECTORY_SEPARATOR . 'slot_' . $i, 'c');
+                if ($handle === false) {
+                    continue;
+                }
+
+                if (flock($handle, LOCK_EX | LOCK_NB)) {
+                    return $handle;
+                }
+
+                fclose($handle);
+            }
+
+            // Keep the marker warm so the gallery keeps reporting this file
+            // as in progress while it queues.
+            self::touchProcessing($year, $filename);
+
+            if (self::$isDrainService) {
+                self::drainerHeartbeat();
+            }
+
+            sleep(5);
+        }
+    }
+
+    /**
+     * Clear the marker, whether the transcode succeeded or gave up.
+     */
+    public static function clearProcessing($year, $filename) {
+        @unlink(self::processingDir($year) . DIRECTORY_SEPARATOR . $filename);
+    }
+
+    /**
+     * Start re-encoding a video in the background.
+     *
+     * Re-encoding a phone video takes minutes; a request gets 30 seconds
+     * (see regenerateThumbnails() working around the same ceiling). So the
+     * work is handed to a detached CLI process and the request returns
+     * immediately with the file marked as processing.
+     *
+     * Spawned through proc_open rather than exec(). The deployment hardens
+     * PHP-FPM with `disable_functions = exec,passthru,shell_exec,system,
+     * popen,...`, which made the exec() version a permanent no-op:
+     * function_exists('exec') returns false for a disabled function, the
+     * guard fired, and every video was filed in whatever container the camera
+     * produced and never converted — silently, with the upload still
+     * reporting success. proc_open is not on that list, and is the same call
+     * generateVideoPoster() has always reached ffmpeg through.
+     *
+     * Note this deliberately does NOT use Symfony's Process, despite it being
+     * available: Process::__destruct() calls stop(), so the worker would be
+     * SIGKILLed the moment this request ended. The command backgrounds itself
+     * inside a shell instead, so the shell exits immediately and the worker is
+     * reparented to init, outliving the PHP-FPM process that spawned it.
+     *
+     * Returns whether a worker was handed off. A worker that starts and then
+     * dies is caught separately, by isProcessing() giving up on a marker that
+     * was never claimed.
+     */
+    public static function queueTranscode($year, $filename) {
+        if (!GalleryConfig::isVideo($filename)) {
+            return false;
+        }
+
+        if (!self::markProcessing($year, $filename)) {
+            error_log("Cannot queue transcode for {$filename}: failed to write marker");
+            return false;
+        }
+
+        // With the drain service up, the marker written above *is* the whole
+        // job — it will pick it up within DRAINER_POLL_INTERVAL.
+        //
+        // This used to spawn a detached PHP process per video regardless, and
+        // everything past the concurrency cap then sat in a sleep loop waiting
+        // for a slot. Each of those waiters had loaded the Composer autoloader,
+        // php-ffmpeg and PEL, so a fifty-video upload was fifty PHP processes
+        // and well over a gigabyte of resident memory to run one encode. The
+        // encodes were capped; the waiting was not.
+        if (self::drainerIsRunning()) {
+            return true;
+        }
+
+        // No drain service. Fall back to spawning a one-shot worker, which is
+        // how this worked before the queue existed — deploying this code
+        // somewhere the systemd unit was never installed must not mean videos
+        // silently stop converting.
+        error_log("No transcode drain service; spawning a one-shot worker for {$filename}");
+
+        // Only the fallback needs these. The drain service reaches the encode
+        // without a CLI spawn at all, so a hardened FPM pool with proc_open
+        // disabled is no longer a reason to refuse the job.
+        $php = GalleryConfig::PHP_CLI_BINARY;
+        $worker = __DIR__ . DIRECTORY_SEPARATOR . 'transcode.php';
+
+        if (!is_executable($php) || !file_exists($worker)) {
+            error_log("Cannot queue transcode for {$filename}: no PHP CLI at {$php}");
+            self::clearProcessing($year, $filename);
+            return false;
+        }
+
+        if (!function_exists('proc_open')) {
+            error_log("Cannot queue transcode for {$filename}: proc_open is unavailable");
+            self::clearProcessing($year, $filename);
+            return false;
+        }
+
+        // Every element is escaped, and $filename has already been through
+        // generateSafeFilename()'s [a-zA-Z0-9._-] alphabet.
+        $command = sprintf(
+            'nohup %s %s %s %s > /dev/null 2>&1 &',
+            escapeshellarg($php),
+            escapeshellarg($worker),
+            escapeshellarg((string) (int) $year),
+            escapeshellarg($filename)
+        );
+
+        $descriptors = [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['file', '/dev/null', 'w'],
+            2 => ['file', '/dev/null', 'w'],
+        ];
+
+        $handle = @proc_open($command, $descriptors, $pipes);
+
+        if (!is_resource($handle)) {
+            error_log("Failed to spawn transcode worker for {$filename}: proc_open refused");
+            self::clearProcessing($year, $filename);
+            return false;
+        }
+
+        // Returns as soon as the shell exits, which is immediately — the
+        // worker it backgrounded is already detached.
+        proc_close($handle);
+
+        return true;
+    }
+
+    /**
+     * Set the date a file is shown and sorted under.
+     *
+     * The metadata is not always right — a camera with a flat battery loses
+     * its clock, a scan carries the date it was scanned, and a video shot
+     * across midnight can land on the wrong day. This is the manual override,
+     * limited to files the person uploaded (or, for an admin, any of them,
+     * since admins upload on other members' behalf).
+     *
+     * The date lives in the file's mtime like every other date here, so
+     * nothing downstream needs to know an edit happened.
+     */
+    public static function setCaptureDate($year, $filename, $timestamp, $userId, $isAdmin = false) {
+        $yearPath = GalleryConfig::getYearPath($year);
+        $filePath = $yearPath . DIRECTORY_SEPARATOR . $filename;
+
+        if (!file_exists($filePath)) {
+            throw new Exception('File not found');
+        }
+
+        if (!GalleryConfig::canManage($filename, $userId, $isAdmin)) {
+            throw new Exception('You can only change the date on files you uploaded');
+        }
+
+        // Same race as delete and reorder: the transcode worker re-stamps the
+        // file from what it read when it started, so an edit made mid-encode
+        // would be silently thrown away a few minutes later.
+        if (self::isProcessing($year, $filename)) {
+            throw new Exception('That video is still being converted. Try again once it is ready.');
+        }
+
+        $timestamp = self::sanityCheckTimestamp((int) $timestamp);
+        if ($timestamp === null) {
+            throw new Exception('That date is not a date this could have been taken');
+        }
+
+        if (!@touch($filePath, $timestamp)) {
+            throw new Exception('Failed to change the date');
+        }
+
+        // Thumbnails are cached by being newer than their original, so moving
+        // a date forward would otherwise throw away a perfectly good thumbnail
+        // and rebuild it — for a video, that means another ffmpeg run.
+        self::keepDerivedNewerThan($year, $filename, $timestamp);
+
+        return $timestamp;
+    }
+
+    /**
+     * Push a file's thumbnail or poster past the given time, if it has one.
+     */
+    private static function keepDerivedNewerThan($year, $filename, $timestamp) {
+        $thumbsDir = GalleryConfig::getYearPath($year) . DIRECTORY_SEPARATOR . 'thumbs';
+
+        $derivedName = GalleryConfig::isImage($filename)
+            ? $filename
+            : pathinfo($filename, PATHINFO_FILENAME) . '.jpg';
+
+        $derivedPath = $thumbsDir . DIRECTORY_SEPARATOR . $derivedName;
+
+        if (file_exists($derivedPath) && filemtime($derivedPath) < $timestamp) {
+            @touch($derivedPath, $timestamp + 1);
+        }
+    }
+
     /**
      * Soft delete a file
      */
-    public static function deleteFile($year, $filename, $userId) {
+    public static function deleteFile($year, $filename, $userId, $isAdmin = false) {
         $yearPath = GalleryConfig::getYearPath($year);
         $filePath = $yearPath . DIRECTORY_SEPARATOR . $filename;
         
@@ -209,10 +982,10 @@ class GalleryManager {
             throw new Exception('File not found');
         }
         
-        // Check if user owns the file using new filename format
-        $fileUserId = GalleryConfig::extractUserId($filename);
-        if ($fileUserId !== $userId) {
-            throw new Exception('Permission denied');
+        // Owner or admin. Admins can upload on another member's behalf, so
+        // they need to be able to remove those uploads too.
+        if (!GalleryConfig::canManage($filename, $userId, $isAdmin)) {
+            throw new Exception('You can only delete files you uploaded');
         }
         
         $deletedFilename = GalleryConfig::DELETED_PREFIX . $filename;
@@ -249,12 +1022,31 @@ class GalleryManager {
     /**
      * Reorder a file to a new position
      */
-    public static function reorderFile($year, $filename, $newPosition, $userId) {
+    public static function reorderFile($year, $filename, $newPosition, $userId, $isAdmin = false) {
         $yearPath = GalleryConfig::getYearPath($year);
+
+        // A year still on the old single-letter keys is converted before
+        // anything here computes a key from its neighbours. Converting
+        // renames files, so it happens before the name the client sent is
+        // resolved — and if that name was one of the renamed ones, the page
+        // is simply out of date.
+        $migrated = OrderingMigration::ensureMigrated($year);
+
         $filePath = $yearPath . DIRECTORY_SEPARATOR . $filename;
         
         if (!file_exists($filePath)) {
+            if ($migrated > 0) {
+                throw new Exception('The gallery was reorganised just now. Refresh the page and try again.');
+            }
             throw new Exception("File not found: {$filename}. It may have been moved or renamed by another operation.");
+        }
+        
+        // Reordering renames the file on disk and changes the order every
+        // member sees. This check did not exist: the $userId argument was
+        // accepted and then overwritten below by the owner ID parsed out of
+        // the filename, so any signed-in member could rearrange the archive.
+        if (!GalleryConfig::canManage($filename, $userId, $isAdmin)) {
+            throw new Exception('You can only rearrange files you uploaded');
         }
         
         // Get current files in order
@@ -308,44 +1100,18 @@ class GalleryManager {
             }
         }
         
-        // Create new filename with new ordering
-        $userId = GalleryConfig::extractUserId($filename);
+        // Rebuild the filename with the new ordering. The owner ID is carried
+        // over from the existing name — reordering never changes who owns a
+        // file, including when an admin does it.
+        $ownerId = GalleryConfig::extractUserId($filename);
         $originalName = GalleryConfig::extractOriginalName($filename);
         $extension = pathinfo($filename, PATHINFO_EXTENSION);
         
-        $newFilename = "{$newOrdering}_{$userId}_{$originalName}.{$extension}";
-        $newFilePath = $yearPath . DIRECTORY_SEPARATOR . $newFilename;
-        
-        // Rename the file
-        if (!rename($filePath, $newFilePath)) {
-            error_log("Failed to rename file from {$filePath} to {$newFilePath}");
-            throw new Exception('Failed to reorder file');
-        }
-        
-        // Also rename the corresponding thumbnail/poster if it exists
-        $thumbsDir = $yearPath . DIRECTORY_SEPARATOR . 'thumbs';
-        
-        if (GalleryConfig::isImage($filename)) {
-            // For images, thumbnail has same filename
-            $oldThumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $filename;
-            $newThumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $newFilename;
-        } else {
-            // For videos, poster has .jpg extension
-            $oldPosterFilename = pathinfo($filename, PATHINFO_FILENAME) . '.jpg';
-            $newPosterFilename = pathinfo($newFilename, PATHINFO_FILENAME) . '.jpg';
-            $oldThumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $oldPosterFilename;
-            $newThumbPath = $thumbsDir . DIRECTORY_SEPARATOR . $newPosterFilename;
-        }
-        
-        if (file_exists($oldThumbPath)) {
-            if (!rename($oldThumbPath, $newThumbPath)) {
-                error_log("Warning: Failed to rename thumbnail/poster from {$oldThumbPath} to {$newThumbPath}");
-                // Don't fail the whole operation if thumbnail rename fails
-            } else {
-                error_log("Successfully renamed thumbnail/poster: {$filename} -> {$newFilename}");
-            }
-        }
-        
+        $newFilename = "{$newOrdering}_{$ownerId}_{$originalName}.{$extension}";
+        // Moves the thumbnail or poster with it — a thumbnail left under the
+        // old name shows up as a blank tile and nothing else.
+        GalleryConfig::renameWithThumbnail($year, $filename, $newFilename);
+
         error_log("Successfully reordered file: {$filename} -> {$newFilename} at position {$newPosition}");
         
         return $newFilename;
