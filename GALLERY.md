@@ -69,43 +69,6 @@ Inserting anywhere is always possible and never renames another file.
 - The algebra is `FractionalOrdering` (`includes/gallery/ordering.php`), a port
   of the scheme described in "Implementing Fractional Indexing".
 
-### Migrating an older year
-
-The first scheme was a single letter, incremented or decremented per insert.
-Both ends of that alphabet saturated by reissuing a key that was already taken,
-so a phone batch — which arrives newest-first, and so inserts every file ahead
-of the last — walked down to `a` and then gave everything after it the key `Z`.
-Files sharing a key tie in the sort, and before `claimFilename()` two files that
-also shared an owner and an original name could overwrite each other outright.
-
-Conversion takes care of itself in three places, all of which no-op once the
-archive is current:
-
-- **At deploy.** Both playbooks run `migrate_ordering.php auto` after the code
-  lands, which checks every year and converts only the ones holding invalid
-  keys.
-- **On the first API request after a deploy** —
-  `OrderingMigration::ensureArchiveMigrated()`, so a box deployed some other
-  way still converts itself before any response carries a filename. A completed
-  sweep leaves `.ordering-scheme` at the storage root naming the scheme
-  version, which reduces the steady-state cost to one `stat()`.
-- **On the write paths**, per year (`ensureMigrated()`), as the backstop for a
-  year that reverts after the archive was stamped — a restore from an old
-  backup, say.
-
-Each takes a lock, so they can all happen at once. To do it by hand:
-
-```bash
-php public/gallery/migrate_ordering.php            # what needs migrating
-php public/gallery/migrate_ordering.php auto       # convert whatever needs it
-php public/gallery/migrate_ordering.php 2026       # dry run: the exact renames
-php public/gallery/migrate_ordering.php 2026 confirm
-php public/gallery/migrate_ordering.php all confirm
-```
-
-It is idempotent, safe to re-run after an interruption, and preserves the order
-the gallery displays today. Thumbnails and posters move with their originals.
-
 ### Tests
 
 No PHPUnit in this project; the suites are plain scripts and exit non-zero on
@@ -113,7 +76,6 @@ failure:
 
 ```bash
 php tests/ordering_test.php
-php tests/ordering_migration_test.php
 ```
 
 ## Chunked Uploads

@@ -53,9 +53,6 @@ class FractionalOrdering {
 
     /**
      * Whether $key is a well-formed key.
-     *
-     * Used to tell keys in this scheme apart from the single-letter keys the
-     * gallery used before it, which is what OrderingMigration keys off.
      */
     public static function isValidKey($key) {
         if (!is_string($key) || $key === '') {

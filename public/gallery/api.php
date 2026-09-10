@@ -19,17 +19,6 @@ header('Content-Type: application/json');
 $auth = new GalleryAuth();
 $auth->requireAuth();
 
-// A deploy that lands this code on an archive still keyed by the old scheme
-// converts it here, before any response carries a filename the client would
-// then act on. Once the archive is current this is a single stat().
-try {
-    OrderingMigration::ensureArchiveMigrated();
-} catch (Exception $e) {
-    // Never take the gallery down over this. What it could not convert is a
-    // sort order, and the upload and reorder paths retry per year anyway.
-    error_log('Gallery ordering migration failed: ' . $e->getMessage());
-}
-
 $user = $auth->getUser();
 $action = $_GET['action'] ?? $_POST['action'] ?? null;
 

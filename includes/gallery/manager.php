@@ -1037,19 +1037,9 @@ class GalleryManager {
     public static function reorderFile($year, $filename, $newPosition, $userId, $isAdmin = false) {
         $yearPath = GalleryConfig::getYearPath($year);
 
-        // A year still on the old single-letter keys is converted before
-        // anything here computes a key from its neighbours. Converting
-        // renames files, so it happens before the name the client sent is
-        // resolved — and if that name was one of the renamed ones, the page
-        // is simply out of date.
-        $migrated = OrderingMigration::ensureMigrated($year);
-
         $filePath = $yearPath . DIRECTORY_SEPARATOR . $filename;
         
         if (!file_exists($filePath)) {
-            if ($migrated > 0) {
-                throw new Exception('The gallery was reorganised just now. Refresh the page and try again.');
-            }
             throw new Exception("File not found: {$filename}. It may have been moved or renamed by another operation.");
         }
         

@@ -4,7 +4,6 @@
  */
 
 require_once __DIR__ . '/ordering.php';
-require_once __DIR__ . '/ordering-migration.php';
 
 class GalleryConfig {
     const GALLERY_STORAGE_PATH = '../../gallery-storage';
@@ -348,10 +347,6 @@ class GalleryConfig {
         if ($year === null) {
             $year = date('Y');
         }
-
-        // A year still on the old single-letter keys converts here, before
-        // anything reads the last key off it.
-        OrderingMigration::ensureMigrated($year);
 
         $files = self::getOrderedFiles($year);
         if (empty($files)) {
